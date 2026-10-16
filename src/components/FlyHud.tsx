@@ -1,6 +1,8 @@
 import { useEffect, useRef, type MutableRefObject } from 'react'
 import { bearingOf, HEADINGS } from '../lib/camera'
 import type { HudState } from '../lib/hud'
+import type { Settings } from '../lib/settings'
+import { usePointerLocked, usePointerLockRefused } from '../lib/pointerLock'
 
 const VISIBLE_DEG = 90 // degrees from the center of the compass to its edge
 const TICKS = Array.from({ length: 24 }, (_, i) => i * 15 - 180)
@@ -8,7 +10,9 @@ const TICKS = Array.from({ length: 24 }, (_, i) => i * 15 - 180)
 const wrap = (deg: number) => ((((deg + 180) % 360) + 360) % 360) - 180
 
 /** Game-style heading strip with a marker pointing back to the car, plus a crosshair. Free cam only. */
-export default function FlyHud({ hudRef }: { hudRef: MutableRefObject<HudState> }) {
+export default function FlyHud({ hudRef, settings }: { hudRef: MutableRefObject<HudState>; settings: Settings }) {
+  const locked = usePointerLocked()
+  const refused = usePointerLockRefused()
   const stripRef = useRef<HTMLDivElement>(null)
   const carRef = useRef<HTMLDivElement>(null)
   const headingRef = useRef<HTMLSpanElement>(null)
@@ -57,6 +61,18 @@ export default function FlyHud({ hudRef }: { hudRef: MutableRefObject<HudState> 
         <span className="compass-heading" ref={headingRef} />
       </div>
       <div className="crosshair" aria-hidden />
+      <div className="fly-status" aria-live="polite">
+        <span className="fly-speed">Speed ×{settings.flySpeed.toFixed(2)}</span>
+        {locked ? (
+          <span>
+            Mouse captured · <kbd>Esc</kbd> release
+          </span>
+        ) : refused ? (
+          settings.lookMode !== 'drag' && <span>This browser blocked mouse capture — drag to look instead</span>
+        ) : (
+          settings.lookMode === 'game' && <span>Click the view to capture the mouse</span>
+        )}
+      </div>
     </>
   )
 }

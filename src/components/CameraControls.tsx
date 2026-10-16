@@ -3,6 +3,8 @@ import * as THREE from 'three'
 import { useFrame, useThree } from '@react-three/fiber'
 import type { OrbitControls as OrbitControlsImpl } from 'three/examples/jsm/controls/OrbitControls.js'
 import { poseFromDirection, viewPose, type CameraMode, type ViewRequest } from '../lib/camera'
+import { clampFlySpeed, type Settings } from '../lib/settings'
+import { isPointerLocked, requestPointerLock } from '../lib/pointerLock'
 
 type Dims = [number, number, number]
 
@@ -112,6 +114,7 @@ export function CameraRig({ modelKey, dims, mode, viewRequest, modelRef, onFocus
     const raycaster = new THREE.Raycaster()
     const ndc = new THREE.Vector2()
     const onDoubleClick = (e: MouseEvent) => {
+      if (isPointerLocked()) return
       const model = modelRef.current
       if (!model || !controls) return
       const rect = el.getBoundingClientRect()
@@ -155,74 +158,174 @@ const MOVE_KEYS = new Set([
 ])
 const LOOK_SENSITIVITY = 0.0028
 const MAX_PITCH = Math.PI / 2 - 0.01
+const WHEEL_STEP = 50 // accumulated wheel delta per speed step (smooths trackpads)
 
-const isTyping = (e: Event) => !!(e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable]')
+const isTyping = (e: Event) =>
+  !!(e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable], dialog')
 
 const tmpWanted = new THREE.Vector3()
 
+interface FlyProps {
+  /** Movement speed in m/s at fly speed ×1. */
+  baseSpeed: number
+  settings: Settings
+  onSpeedChange: (flySpeed: number) => void
+}
+
 /**
- * Free camera: WASD/arrows move along the view, Q/E down/up, drag to look,
- * right/middle-drag to pan, scroll to move forward, Shift for 3× speed.
+ * Free camera: WASD/arrows move along the view, Q/E down/up, Shift for 3× speed.
+ * Mouse look depends on the chosen style:
+ * - drag: left-drag looks, right/middle-drag pans
+ * - hold-right: hold the right button for locked mouse-look (Unreal/Unity editor), left-drag also looks, middle pans
+ * - game: click to capture the mouse (FPS), Esc releases; right/middle-drag pans
+ * G toggles the mouse lock in any style. Scrolling with the right button held changes speed.
  */
-export function FlyControls({ speed }: { speed: number }) {
+export function FlyControls({ baseSpeed, settings, onSpeedChange }: FlyProps) {
   const camera = useThree((s) => s.camera)
   const gl = useThree((s) => s.gl)
   const keys = useRef(new Set<string>())
   const velocity = useRef(new THREE.Vector3())
+  // Settings change often (speed via wheel); read them through a ref so listeners and held keys survive.
+  const cfg = useRef({ baseSpeed, settings, onSpeedChange })
+  cfg.current = { baseSpeed, settings, onSpeedChange }
 
   useEffect(() => {
     const el = gl.domElement
-    const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
-    euler.z = 0
+    const euler = new THREE.Euler()
     let drag: 'look' | 'pan' | null = null
+    let captured: number | null = null
+    let rightHeld = false
     let lastX = 0
     let lastY = 0
+    let wheelAccum = 0
 
-    const onPointerDown = (e: PointerEvent) => {
+    const locked = () => document.pointerLockElement === el
+    const speed = () => cfg.current.baseSpeed * cfg.current.settings.flySpeed
+    const syncEuler = () => {
       // The camera may have been moved by a transition since free cam started.
       euler.setFromQuaternion(camera.quaternion, 'YXZ')
       euler.z = 0
-      drag = e.button === 0 ? 'look' : 'pan'
+    }
+    const look = (dx: number, dy: number) => {
+      const { sensitivity, invertY } = cfg.current.settings
+      const k = LOOK_SENSITIVITY * sensitivity
+      euler.y -= dx * k
+      euler.x = THREE.MathUtils.clamp(euler.x - dy * k * (invertY ? -1 : 1), -MAX_PITCH, MAX_PITCH)
+      camera.quaternion.setFromEuler(euler)
+    }
+    const pan = (dx: number, dy: number) => {
+      const k = speed() * 0.004
+      camera.translateX(-dx * k)
+      camera.translateY(dy * k)
+    }
+    const updateCursor = () => {
+      const mode = cfg.current.settings.lookMode
+      el.style.cursor =
+        drag === 'look' ? 'grabbing' : drag === 'pan' ? 'move' : mode === 'game' ? 'crosshair' : 'grab'
+    }
+    const startDrag = (kind: 'look' | 'pan', e: PointerEvent) => {
+      drag = kind
       lastX = e.clientX
       lastY = e.clientY
       el.setPointerCapture(e.pointerId)
-      el.style.cursor = drag === 'look' ? 'grabbing' : 'move'
+      captured = e.pointerId
+    }
+
+    const onPointerDown = (e: PointerEvent) => {
+      syncEuler()
+      if (locked()) return
+      const mode = cfg.current.settings.lookMode
+      if (mode === 'drag') {
+        startDrag(e.button === 0 ? 'look' : 'pan', e)
+      } else if (mode === 'hold-right') {
+        if (e.button === 2) {
+          rightHeld = true
+          // Falls back to plain drag-look if the browser refuses the lock.
+          drag = 'look'
+          lastX = e.clientX
+          lastY = e.clientY
+          requestPointerLock(el)
+        } else {
+          startDrag(e.button === 0 ? 'look' : 'pan', e)
+        }
+      } else if (e.button === 0) {
+        // Dragging still looks around if the browser refuses the lock.
+        startDrag('look', e)
+        requestPointerLock(el)
+      } else {
+        startDrag('pan', e)
+      }
+      updateCursor()
     }
     const onPointerMove = (e: PointerEvent) => {
+      if (locked()) {
+        look(e.movementX, e.movementY)
+        return
+      }
       if (!drag) return
       const dx = e.clientX - lastX
       const dy = e.clientY - lastY
       lastX = e.clientX
       lastY = e.clientY
-      if (drag === 'look') {
-        euler.y -= dx * LOOK_SENSITIVITY
-        euler.x = THREE.MathUtils.clamp(euler.x - dy * LOOK_SENSITIVITY, -MAX_PITCH, MAX_PITCH)
-        camera.quaternion.setFromEuler(euler)
-      } else {
-        const k = speed * 0.004
-        camera.translateX(-dx * k)
-        camera.translateY(dy * k)
-      }
+      if (drag === 'look') look(dx, dy)
+      else pan(dx, dy)
     }
     const onPointerUp = (e: PointerEvent) => {
+      if (e.button === 2 && rightHeld) {
+        rightHeld = false
+        if (locked() && cfg.current.settings.lookMode === 'hold-right') document.exitPointerLock()
+      }
       drag = null
-      el.style.cursor = 'grab'
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
+      captured = null
+      updateCursor()
     }
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
-      camera.translateZ(THREE.MathUtils.clamp(e.deltaY, -60, 60) * speed * 0.004)
+      const { wheel, flySpeed } = cfg.current.settings
+      if (rightHeld || wheel === 'speed') {
+        wheelAccum += e.deltaY
+        if (Math.abs(wheelAccum) < WHEEL_STEP) return
+        const steps = Math.trunc(wheelAccum / WHEEL_STEP)
+        wheelAccum -= steps * WHEEL_STEP
+        const next = clampFlySpeed(Math.round(flySpeed * 1.15 ** -steps * 100) / 100)
+        // Apply locally right away so a fast burst of wheel events compounds before React re-renders.
+        cfg.current.settings = { ...cfg.current.settings, flySpeed: next }
+        cfg.current.onSpeedChange(next)
+      } else {
+        camera.translateZ(THREE.MathUtils.clamp(e.deltaY, -60, 60) * speed() * 0.004)
+      }
     }
     const onContextMenu = (e: Event) => e.preventDefault()
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTyping(e) || e.metaKey || e.ctrlKey || !MOVE_KEYS.has(e.code)) return
+      if (isTyping(e) || e.metaKey || e.ctrlKey) return
+      if (e.code === 'KeyG' && !e.repeat) {
+        syncEuler()
+        if (locked()) document.exitPointerLock()
+        else requestPointerLock(el)
+        return
+      }
+      if (!MOVE_KEYS.has(e.code)) return
       keys.current.add(e.code)
       e.preventDefault()
     }
     const onKeyUp = (e: KeyboardEvent) => keys.current.delete(e.code)
     const onBlur = () => keys.current.clear()
+    const onLockChange = () => {
+      syncEuler()
+      if (locked()) {
+        // Mouse-look takes over from any drag that started the lock.
+        drag = null
+        if (captured !== null && el.hasPointerCapture(captured)) el.releasePointerCapture(captured)
+        captured = null
+      } else {
+        rightHeld = false
+      }
+      updateCursor()
+    }
 
-    el.style.cursor = 'grab'
+    syncEuler()
+    updateCursor()
     el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('pointermove', onPointerMove)
     el.addEventListener('pointerup', onPointerUp)
@@ -232,9 +335,11 @@ export function FlyControls({ speed }: { speed: number }) {
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', onBlur)
+    document.addEventListener('pointerlockchange', onLockChange)
     const pressed = keys.current
     const vel = velocity.current
     return () => {
+      if (locked()) document.exitPointerLock()
       el.style.cursor = ''
       el.removeEventListener('pointerdown', onPointerDown)
       el.removeEventListener('pointermove', onPointerMove)
@@ -245,10 +350,19 @@ export function FlyControls({ speed }: { speed: number }) {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)
+      document.removeEventListener('pointerlockchange', onLockChange)
       pressed.clear()
       vel.set(0, 0, 0)
     }
-  }, [camera, gl, speed])
+  }, [camera, gl])
+
+  // Update the idle cursor when the look style changes mid-flight.
+  useEffect(() => {
+    const el = gl.domElement
+    if (el.style.cursor !== 'grabbing' && el.style.cursor !== 'move') {
+      el.style.cursor = settings.lookMode === 'game' ? 'crosshair' : 'grab'
+    }
+  }, [settings.lookMode, gl])
 
   useFrame((_, delta) => {
     const k = keys.current
@@ -263,7 +377,7 @@ export function FlyControls({ speed }: { speed: number }) {
     wanted.y += axis(['KeyE', 'PageUp'], ['KeyQ', 'PageDown'])
     if (wanted.lengthSq() > 0) {
       const boost = k.has('ShiftLeft') || k.has('ShiftRight') ? 3 : 1
-      wanted.normalize().multiplyScalar(speed * boost)
+      wanted.normalize().multiplyScalar(cfg.current.baseSpeed * cfg.current.settings.flySpeed * boost)
     }
     velocity.current.lerp(wanted, 1 - Math.exp(-dt * 8))
     if (velocity.current.lengthSq() > 1e-8) camera.position.addScaledVector(velocity.current, dt)

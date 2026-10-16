@@ -1,10 +1,19 @@
 import type { MouseEvent } from 'react'
 import { VIEWS, type CameraMode, type CameraView } from '../lib/camera'
+import type { LookMode } from '../lib/settings'
 
 interface Props {
   mode: CameraMode
+  lookMode: LookMode
+  showHints: boolean
   onMode: (mode: CameraMode) => void
   onView: (view: CameraView) => void
+}
+
+const LOOK_HINTS: Record<LookMode, string[]> = {
+  drag: ['Drag look', 'Right-drag pan'],
+  'hold-right': ['Hold right button look', 'Middle-drag pan', 'Right + scroll speed'],
+  game: ['Click to capture mouse', 'Right-drag pan'],
 }
 
 // Drop focus after clicking so keys like W/A/S/D go to the free cam, not the button.
@@ -13,7 +22,7 @@ const blurAfter = (fn: () => void) => (e: MouseEvent<HTMLButtonElement>) => {
   fn()
 }
 
-export default function ViewToolbar({ mode, onMode, onView }: Props) {
+export default function ViewToolbar({ mode, lookMode, showHints, onMode, onView }: Props) {
   return (
     <>
       <div className="view-toolbar" role="toolbar" aria-label="Camera">
@@ -33,27 +42,30 @@ export default function ViewToolbar({ mode, onMode, onView }: Props) {
         ))}
       </div>
 
-      <div className="camera-help" aria-live="polite">
-        {mode === 'fly' ? (
-          <>
-            <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
-            <span><kbd>Q</kbd><kbd>E</kbd> down / up</span>
-            <span>Drag look</span>
-            <span>Right-drag pan</span>
-            <span>Scroll forward</span>
-            <span><kbd>Shift</kbd> faster</span>
-            <span><kbd>Esc</kbd> exit</span>
-          </>
-        ) : (
-          <>
-            <span>Drag rotate</span>
-            <span>Right-drag pan</span>
-            <span>Double-click focus point</span>
-            <span><kbd>F</kbd> free cam</span>
-            <span><kbd>M</kbd> map</span>
-          </>
-        )}
-      </div>
+      {showHints && (
+        <div className="camera-help" aria-live="polite">
+          {mode === 'fly' ? (
+            <>
+              <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
+              <span><kbd>Q</kbd><kbd>E</kbd> down / up</span>
+              {LOOK_HINTS[lookMode].map((hint) => (
+                <span key={hint}>{hint}</span>
+              ))}
+              <span><kbd>Shift</kbd> faster</span>
+              <span><kbd>G</kbd> lock mouse</span>
+              <span><kbd>Esc</kbd> exit</span>
+            </>
+          ) : (
+            <>
+              <span>Drag rotate</span>
+              <span>Right-drag pan</span>
+              <span>Double-click focus point</span>
+              <span><kbd>F</kbd> free cam</span>
+              <span><kbd>M</kbd> map</span>
+            </>
+          )}
+        </div>
+      )}
     </>
   )
 }

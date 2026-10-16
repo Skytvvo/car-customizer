@@ -8,6 +8,7 @@ import { FOV, viewPose, type CameraMode, type ViewRequest } from '../lib/camera'
 import { CameraRig, FlyControls } from './CameraControls'
 import { HudSync, SilhouetteBaker, ViewCube } from './SceneHud'
 import type { HudState } from '../lib/hud'
+import type { Settings } from '../lib/settings'
 
 export type CaptureFn = () => string
 
@@ -21,6 +22,8 @@ interface ViewerProps {
   viewRequest: ViewRequest | null
   onFocus: () => void
   showViewCube: boolean
+  settings: Settings
+  onFlySpeedChange: (flySpeed: number) => void
   onViewDirection: (dir: [number, number, number]) => void
   hudRef: MutableRefObject<HudState>
   captureRef: MutableRefObject<CaptureFn | null>
@@ -94,7 +97,9 @@ export default function Viewer(props: ViewerProps) {
         modelRef={modelRef}
         onFocus={props.onFocus}
       />
-      {cameraMode === 'fly' && <FlyControls speed={length * 0.7} />}
+      {cameraMode === 'fly' && (
+        <FlyControls baseSpeed={length * 0.7} settings={props.settings} onSpeedChange={props.onFlySpeedChange} />
+      )}
       <HudSync hudRef={props.hudRef} mode={cameraMode} dims={dims} />
       <SilhouetteBaker
         hudRef={props.hudRef}

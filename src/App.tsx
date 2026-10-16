@@ -7,6 +7,9 @@ import ViewToolbar from './components/ViewToolbar'
 import Minimap from './components/Minimap'
 import FlyHud from './components/FlyHud'
 import { createHudState } from './lib/hud'
+import SettingsDialog from './components/SettingsDialog'
+import { loadSettings, saveSettings, type Settings } from './lib/settings'
+import { pointerLockBusy } from './lib/pointerLock'
 import { VIEWS, type CameraMode, type CameraView, type ViewRequest } from './lib/camera'
 import { ACCEPT, countGeometry, expandFiles, extOf, loadModel, pickMainFile } from './lib/loaders'
 import { autoOrient, computePlacement, measureBounds } from './lib/normalize'
@@ -44,8 +47,8 @@ export default function App() {
   const [showGrid, setShowGrid] = useState(false)
   const [cameraMode, setCameraMode] = useState<CameraMode>('orbit')
   const [viewRequest, setViewRequest] = useState<ViewRequest | null>(null)
-  const [showMinimap, setShowMinimap] = useState(true)
-  const [showViewCube, setShowViewCube] = useState(true)
+  const [settings, setSettings] = useState<Settings>(loadSettings)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const hudRef = useRef(createHudState())
   const cameraModeRef = useRef(cameraMode)
   cameraModeRef.current = cameraMode
@@ -60,6 +63,10 @@ export default function App() {
   useEffect(() => {
     refreshLibrary().catch((e) => setError(String(e)))
   }, [refreshLibrary])
+
+  useEffect(() => saveSettings(settings), [settings])
+  const updateSettings = useCallback((patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })), [])
+  const setFlySpeed = useCallback((flySpeed: number) => updateSettings({ flySpeed }), [updateSettings])
 
   const placement = useMemo(
     () => (current ? computePlacement(current.bounds, current.transform) : null),
@@ -108,11 +115,12 @@ export default function App() {
     if (!hasModel) return
     const views = Object.keys(VIEWS) as CameraView[]
     const onKey = (e: KeyboardEvent) => {
-      const typing = (e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable]')
+      const typing = (e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable], dialog')
       if (typing || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
       if (e.code === 'KeyF') changeCameraMode(cameraModeRef.current === 'fly' ? 'orbit' : 'fly')
-      else if (e.code === 'Escape') setCameraMode('orbit')
-      else if (e.code === 'KeyM') setShowMinimap((v) => !v)
+      // The first Esc in a locked free cam only releases the mouse (the browser does that itself).
+      else if (e.code === 'Escape' && !pointerLockBusy()) setCameraMode('orbit')
+      else if (e.code === 'KeyM') setSettings((s) => ({ ...s, showMinimap: !s.showMinimap }))
       else if (/^Digit[1-9]$/.test(e.code) && views[Number(e.code.slice(5)) - 1]) {
         requestView(views[Number(e.code.slice(5)) - 1])
       }
@@ -252,6 +260,9 @@ export default function App() {
             ◢
           </span>
           Car Customizer
+          <button className="btn-icon settings-btn" onClick={() => setSettingsOpen(true)} aria-label="Settings" title="Settings">
+            ⚙
+          </button>
         </header>
         <button className="btn btn-primary btn-block" onClick={() => fileInput.current?.click()}>
           Upload model
@@ -281,16 +292,26 @@ export default function App() {
           cameraMode={cameraMode}
           viewRequest={viewRequest}
           onFocus={focusOrbit}
-          showViewCube={showViewCube}
+          showViewCube={settings.showViewCube}
+          settings={settings}
+          onFlySpeedChange={setFlySpeed}
           onViewDirection={requestDirection}
           hudRef={hudRef}
           captureRef={captureRef}
         />
 
-        {current && showMinimap && <Minimap hudRef={hudRef} onMoveTo={moveCameraTo} />}
-        {current && cameraMode === 'fly' && <FlyHud hudRef={hudRef} />}
+        {current && settings.showMinimap && <Minimap hudRef={hudRef} onMoveTo={moveCameraTo} />}
+        {current && cameraMode === 'fly' && <FlyHud hudRef={hudRef} settings={settings} />}
 
-        {current && <ViewToolbar mode={cameraMode} onMode={changeCameraMode} onView={requestView} />}
+        {current && (
+          <ViewToolbar
+            mode={cameraMode}
+            lookMode={settings.lookMode}
+            showHints={settings.showHints}
+            onMode={changeCameraMode}
+            onView={requestView}
+          />
+        )}
 
         {!current && !busy && (
           <button className="empty" onClick={() => fileInput.current?.click()}>
@@ -308,8 +329,13 @@ export default function App() {
             toggles={[
               { label: 'Turntable', checked: autoRotate, onChange: setAutoRotate },
               { label: 'Grid', checked: showGrid, onChange: setShowGrid },
-              { label: 'Minimap', checked: showMinimap, onChange: setShowMinimap, hint: 'Top-down map (M)' },
-              { label: 'View cube', checked: showViewCube, onChange: setShowViewCube },
+              {
+                label: 'Minimap',
+                checked: settings.showMinimap,
+                onChange: (v) => updateSettings({ showMinimap: v }),
+                hint: 'Top-down map (M)',
+              },
+              { label: 'View cube', checked: settings.showViewCube, onChange: (v) => updateSettings({ showViewCube: v }) },
             ]}
             onChange={update}
             onAutoOrient={() => update({ transform: { ...current.transform, rotation: autoOrient(current.bounds) } })}
@@ -334,6 +360,13 @@ export default function App() {
         )}
         {dragging && <div className="drop-hint">Drop to load model</div>}
       </main>
+
+      <SettingsDialog
+        open={settingsOpen}
+        settings={settings}
+        onChange={updateSettings}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   )
 }
