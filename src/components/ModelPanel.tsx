@@ -1,24 +1,27 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { OpenModel } from '../App'
+import type { ModelView } from '../App'
+import type { EditDoc, History } from '../lib/history'
 import type { QuarterTurns } from '../lib/types'
 import { formatBytes } from '../lib/format'
 
 interface Props {
-  model: OpenModel
+  model: ModelView
   dimensions: [number, number, number]
   stats: { meshes: number; triangles: number }
   toggles: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string }[]
   saving: boolean
-  onChange: (patch: Partial<Pick<OpenModel, 'name' | 'transform'>>) => void
+  onChange: (patch: Partial<Pick<EditDoc, 'name' | 'transform'>>) => void
   onAutoOrient: () => void
   onSave: () => void
   tab: PanelTab
   onTab: (tab: PanelTab) => void
   partsCount: number
   partsPanel: ReactNode
+  history: History
+  historyPanel: ReactNode
 }
 
-export type PanelTab = 'model' | 'parts'
+export type PanelTab = 'model' | 'parts' | 'history'
 
 const m = (v: number) => `${v.toFixed(2)} m`
 
@@ -60,9 +63,21 @@ export default function ModelPanel(p: Props) {
         <button role="tab" aria-selected={p.tab === 'parts'} onClick={() => p.onTab('parts')}>
           Parts {p.partsCount > 0 && <span className="count">{p.partsCount}</span>}
         </button>
+        <button role="tab" aria-selected={p.tab === 'history'} onClick={() => p.onTab('history')}>
+          History
+        </button>
+        <span className="tabs-actions">
+          <button className="btn-icon subtle" onClick={p.history.undo} disabled={!p.history.canUndo} title="Undo (Ctrl+Z)" aria-label="Undo">
+            ↶
+          </button>
+          <button className="btn-icon subtle" onClick={p.history.redo} disabled={!p.history.canRedo} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
+            ↷
+          </button>
+        </span>
       </div>
 
       {p.tab === 'parts' && p.partsPanel}
+      {p.tab === 'history' && p.historyPanel}
       {p.tab === 'model' && (
         <>
           <div className="field">

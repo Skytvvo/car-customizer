@@ -1205,3 +1205,168 @@ kbd {
   font-weight: 400;
   opacity: 0.9;
 }
+
+/* Undo/redo in the tab bar */
+.tabs {
+  align-items: center;
+}
+
+.tabs-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: 4px;
+}
+
+.tabs-actions .btn-icon {
+  width: 28px;
+  height: 28px;
+  font-size: 15px;
+}
+
+.btn-icon:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Presets */
+.catalog {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.catalog-card {
+  min-height: 70px;
+  padding: 8px 4px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.catalog-card[aria-expanded='true'] {
+  border-color: var(--accent);
+  background: rgba(232, 69, 44, 0.08);
+}
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preset {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.preset:hover {
+  border-color: var(--accent);
+}
+
+.preset[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: rgba(232, 69, 44, 0.15);
+}
+
+.select-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.part-name small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* History */
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.history-list button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-list button:hover {
+  background: var(--surface-2);
+}
+
+.history-list li.current button {
+  border-color: var(--accent);
+  background: rgba(232, 69, 44, 0.1);
+}
+
+.history-list li.undone button {
+  opacity: 0.45;
+}
+
+.history-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Shape (bend / sweep / twist / taper) */
+.shape {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shape-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.shape .label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.btn-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn-link:hover {
+  text-decoration: underline;
+}

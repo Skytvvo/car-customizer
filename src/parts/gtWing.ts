@@ -11,13 +11,15 @@ export interface GtWingParams {
   endplate: number // 0–1
   flap: boolean
   gurney: boolean
+  /** Pedestal posts under the wing, or swan-neck mounts that hang it from above (modern GT style). */
+  mount: 'pedestal' | 'swan'
 }
 
 const UPRIGHT_THICKNESS = 0.014
 const ENDPLATE_THICKNESS = 0.008
 
 /**
- * Pedestal-mount GT wing. Origin at the mounting feet (sits on the trunk/hatch),
+ * GT wing (pedestal or swan-neck mounts). Origin at the mounting feet (sits on the trunk/hatch),
  * span across X, front toward +Z.
  */
 export function buildGtWing(raw: PartParams, material: THREE.Material) {
@@ -59,20 +61,14 @@ export function buildGtWing(raw: PartParams, material: THREE.Material) {
     group.add(flap)
   }
 
-  // Uprights: tapered plates from the feet up into the wing's underside, plus foot plates.
+  // Uprights + foot plates.
   const halfGap = (p.span * p.spacing) / 2
+  const profile = p.mount === 'swan' ? swanNeckProfile(c, lineY) : pedestalProfile(c, lineY)
+  const footZ = p.mount === 'swan' ? -c * 0.62 : -c * 0.04
   for (const x of [-halfGap, halfGap]) {
-    const zt1 = c * 0.12
-    const zt2 = -c * 0.32
-    const profile = [
-      new THREE.Vector2(c * 0.3, 0),
-      new THREE.Vector2(-c * 0.38, 0),
-      new THREE.Vector2(zt2, lineY(zt2) - 0.004),
-      new THREE.Vector2(zt1, lineY(zt1) - 0.004),
-    ]
     add(sidePlate(profile, UPRIGHT_THICKNESS, x))
     const foot = add(box(0.05, 0.008, c * 0.8))
-    foot.position.set(x, 0.004, -c * 0.04)
+    foot.position.set(x, 0.004, footZ)
   }
 
   // Endplates: vertical panels covering the wing tips (taller with a flap).
@@ -89,4 +85,43 @@ export function buildGtWing(raw: PartParams, material: THREE.Material) {
   }
 
   return group
+}
+
+/** Tapered post from the feet up into the wing's underside. */
+function pedestalProfile(c: number, lineY: (z: number) => number) {
+  const zt1 = c * 0.12
+  const zt2 = -c * 0.32
+  return [
+    new THREE.Vector2(c * 0.3, 0),
+    new THREE.Vector2(-c * 0.38, 0),
+    new THREE.Vector2(zt2, lineY(zt2) - 0.004),
+    new THREE.Vector2(zt1, lineY(zt1) - 0.004),
+  ]
+}
+
+/**
+ * Swan neck: rises behind the wing, arcs over the trailing edge and lands on the top surface.
+ * Built by thickening a cubic Bézier centerline (wider at the base).
+ */
+function swanNeckProfile(c: number, lineY: (z: number) => number) {
+  const top = lineY(-c * 0.5) + 0.07
+  const curve = new THREE.CubicBezierCurve(
+    new THREE.Vector2(-c * 0.62, 0),
+    new THREE.Vector2(-c * 0.9, top * 0.75),
+    new THREE.Vector2(-c * 0.55, top + 0.04),
+    new THREE.Vector2(-c * 0.02, lineY(-c * 0.02) + 0.012),
+  )
+  const samples = 24
+  const left: THREE.Vector2[] = []
+  const right: THREE.Vector2[] = []
+  for (let i = 0; i <= samples; i++) {
+    const t = i / samples
+    const point = curve.getPoint(t)
+    const tangent = curve.getTangent(t)
+    const normal = new THREE.Vector2(-tangent.y, tangent.x)
+    const half = THREE.MathUtils.lerp(0.04, 0.02, t)
+    left.push(point.clone().addScaledVector(normal, half))
+    right.push(point.clone().addScaledVector(normal, -half))
+  }
+  return [...left, ...right.reverse()]
 }

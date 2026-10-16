@@ -7,8 +7,7 @@ import type { Placement } from '../lib/normalize'
 import { FOV, viewPose, type CameraMode, type ViewRequest } from '../lib/camera'
 import { CameraRig, FlyControls } from './CameraControls'
 import { HudSync, SilhouetteBaker, ViewCube } from './SceneHud'
-import PartsLayer, { type GizmoMode, type PickMode, type SceneApi } from './PartsLayer'
-import type { Build, MeshIndex, PartInstance, Vec3 } from '../lib/build'
+import PartsLayer, { type PartsLayerProps } from './PartsLayer'
 import type { HudState } from '../lib/hud'
 import type { Settings } from '../lib/settings'
 
@@ -30,18 +29,7 @@ interface ViewerProps {
   onFlySpeedChange: (flySpeed: number) => void
   onViewDirection: (dir: [number, number, number]) => void
   hudRef: MutableRefObject<HudState>
-  parts: {
-    build: Build
-    meshIndex: MeshIndex | null
-    selectedId: string | null
-    gizmoMode: GizmoMode
-    pickMode: PickMode
-    apiRef: MutableRefObject<SceneApi | null>
-    onSelect: (id: string | null) => void
-    onTransform: (id: string, patch: Pick<PartInstance, 'position' | 'rotation' | 'scale'>) => void
-    onPlace: (point: Vec3) => void
-    onToggleHidden: (path: string) => void
-  }
+  parts: Omit<PartsLayerProps, 'modelRef'>
   captureRef: MutableRefObject<CaptureFn | null>
 }
 

@@ -16,32 +16,43 @@ import { autoOrient, computePlacement, measureBounds } from './lib/normalize'
 import { deleteModel, getModelFiles, listModels, saveModel, storageUsage } from './lib/storage'
 import { filesFromDrop } from './lib/dropFiles'
 import PartsPanel from './components/PartsPanel'
+import HistoryPanel from './components/HistoryPanel'
 import type { GizmoMode, PickMode, SceneApi } from './components/PartsLayer'
 import type { PanelTab } from './components/ModelPanel'
-import { emptyBuild, indexMeshes, type Build, type PartInstance, type Vec3 } from './lib/build'
-import { CATALOG, defaultParams } from './parts/catalog'
-import type { ModelRecord, ModelTransform, StoredFile } from './lib/types'
+import { emptyBuild, indexMeshes, meshLabel, type Build, type PartInstance, type Vec3 } from './lib/build'
+import { useHistory, type EditDoc } from './lib/history'
+import { CATALOG, partName, resolveParams } from './parts/catalog'
+import { forgetPartTemplate, importPartAsset, initialFit } from './parts/uploaded'
+import { deletePartAsset, listPartAssets, savePartAsset } from './lib/storage'
+import type { ModelRecord, PartAsset, StoredFile } from './lib/types'
 
 const DEFAULT_LENGTH = 4.5
 const EMPTY_BUILD = emptyBuild()
 
-/** The model currently open in the viewer, saved or not. */
+const TEXT_INPUT_TYPES = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number'])
+/** Fields with their own text undo, where Ctrl+Z must not undo app edits. */
+function isTextField(el: HTMLElement | null) {
+  if (!el) return false
+  if (el.isContentEditable || el.tagName === 'TEXTAREA') return true
+  return el.tagName === 'INPUT' && TEXT_INPUT_TYPES.has((el as HTMLInputElement).type)
+}
+
+/** The model currently open in the viewer. What the user edits lives in the history document (EditDoc). */
 export interface OpenModel {
   key: string
   savedId?: string
   createdAt?: number
-  name: string
   format: string
   mainFile: string
   files: StoredFile[]
   raw: THREE.Object3D
   bounds: THREE.Box3
-  transform: ModelTransform
-  build: Build
   missing: string[]
-  dirty: boolean
   dispose: () => void
 }
+
+/** What the side panel shows: the model plus its current edits. */
+export type ModelView = OpenModel & EditDoc & { dirty: boolean }
 
 export default function App() {
   const [library, setLibrary] = useState<ModelRecord[]>([])
@@ -61,6 +72,13 @@ export default function App() {
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>('translate')
   const [pickMode, setPickMode] = useState<PickMode>(null)
   const sceneApiRef = useRef<SceneApi | null>(null)
+  const [assets, setAssets] = useState<PartAsset[]>([])
+  const assetMap = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets])
+  const history = useHistory()
+  const doc = history.doc
+  // The document as last saved; undoing back to it makes the car "Saved" again.
+  const [savedDoc, setSavedDoc] = useState<EditDoc | null>(null)
+  const dirty = !!current && (!current.savedId || doc !== savedDoc)
   const hudRef = useRef(createHudState())
   // The side panel floats over the 3D view on wide screens (it becomes a bottom sheet on phones).
   const [wideStage, setWideStage] = useState(() => window.matchMedia('(min-width: 761px)').matches)
@@ -82,6 +100,9 @@ export default function App() {
 
   useEffect(() => {
     refreshLibrary().catch((e) => setError(String(e)))
+    listPartAssets()
+      .then(setAssets)
+      .catch((e) => setError(String(e)))
   }, [refreshLibrary])
 
   useEffect(() => saveSettings(settings), [settings])
@@ -89,8 +110,8 @@ export default function App() {
   const setFlySpeed = useCallback((flySpeed: number) => updateSettings({ flySpeed }), [updateSettings])
 
   const placement = useMemo(
-    () => (current ? computePlacement(current.bounds, current.transform) : null),
-    [current?.bounds, current?.transform], // eslint-disable-line react-hooks/exhaustive-deps
+    () => (current && doc ? computePlacement(current.bounds, doc.transform) : null),
+    [current?.bounds, doc?.transform], // eslint-disable-line react-hooks/exhaustive-deps
   )
   const stats = useMemo(() => (current ? countGeometry(current.raw) : null), [current?.raw]) // eslint-disable-line react-hooks/exhaustive-deps
   const meshIndex = useMemo(() => (current ? indexMeshes(current.raw) : null), [current?.raw]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -136,7 +157,16 @@ export default function App() {
     if (!hasModel) return
     const views = Object.keys(VIEWS) as CameraView[]
     const onKey = (e: KeyboardEvent) => {
-      const typing = (e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable], dialog')
+      const target = e.target as HTMLElement | null
+      // Undo/redo works everywhere except text fields (they keep their own text undo) and dialogs.
+      if ((e.metaKey || e.ctrlKey) && (e.code === 'KeyZ' || e.code === 'KeyY')) {
+        if (isTextField(target) || target?.closest?.('dialog')) return
+        e.preventDefault()
+        if (e.code === 'KeyY' || e.shiftKey) partsKeys.current.history.redo()
+        else partsKeys.current.history.undo()
+        return
+      }
+      const typing = target?.closest?.('input, textarea, select, [contenteditable], dialog')
       if (typing || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
       if (e.code === 'KeyF') changeCameraMode(cameraModeRef.current === 'fly' ? 'orbit' : 'fly')
       // Esc steps back one level: cancel picking → deselect part → leave free cam.
@@ -158,10 +188,12 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [hasModel, requestView, changeCameraMode])
 
-  const open = (next: OpenModel) => {
+  const open = (next: OpenModel, initial: EditDoc, label: string) => {
     setCameraMode('orbit')
     setSelectedPartId(null)
     setPickMode(null)
+    history.reset(initial, label)
+    setSavedDoc(next.savedId ? initial : null)
     setCurrent((prev) => {
       if (prev && prev.raw !== next.raw) prev.dispose()
       return next
@@ -187,46 +219,48 @@ export default function App() {
       const main = pickMainFile(files)
       const loaded = await loadModel(files, main.name)
       const bounds = measureBounds(loaded.object)
-      open({
-        key: crypto.randomUUID(),
-        name: main.name.split('/').pop()!.replace(/\.[^.]+$/, ''),
-        format: extOf(main.name),
-        mainFile: main.name,
-        files,
-        raw: loaded.object,
-        bounds,
-        transform: { rotation: autoOrient(bounds), targetLength: DEFAULT_LENGTH },
-        build: emptyBuild(),
-        missing: loaded.missing,
-        dirty: true,
-        dispose: loaded.dispose,
-      })
+      const name = main.name.split('/').pop()!.replace(/\.[^.]+$/, '')
+      open(
+        {
+          key: crypto.randomUUID(),
+          format: extOf(main.name),
+          mainFile: main.name,
+          files,
+          raw: loaded.object,
+          bounds,
+          missing: loaded.missing,
+          dispose: loaded.dispose,
+        },
+        { name, transform: { rotation: autoOrient(bounds), targetLength: DEFAULT_LENGTH }, build: emptyBuild() },
+        `Imported ${name}`,
+      )
     })
 
   const openSaved = (record: ModelRecord) =>
     run(`Opening ${record.name}…`, async () => {
       const files = await getModelFiles(record.id)
       const loaded = await loadModel(files, record.mainFile)
-      open({
-        key: record.id,
-        savedId: record.id,
-        createdAt: record.createdAt,
-        name: record.name,
-        format: record.format,
-        mainFile: record.mainFile,
-        files,
-        raw: loaded.object,
-        bounds: measureBounds(loaded.object),
-        transform: record.transform,
-        build: record.build ?? emptyBuild(),
-        missing: loaded.missing,
-        dirty: false,
-        dispose: loaded.dispose,
-      })
+      open(
+        {
+          key: record.id,
+          savedId: record.id,
+          createdAt: record.createdAt,
+          format: record.format,
+          mainFile: record.mainFile,
+          files,
+          raw: loaded.object,
+          bounds: measureBounds(loaded.object),
+          missing: loaded.missing,
+          dispose: loaded.dispose,
+        },
+        { name: record.name, transform: record.transform, build: record.build ?? emptyBuild() },
+        'Opened',
+      )
     })
 
   const save = () =>
     current &&
+    doc &&
     placement &&
     stats &&
     run('Saving…', async () => {
@@ -234,23 +268,24 @@ export default function App() {
       const id = current.savedId ?? crypto.randomUUID()
       const record: ModelRecord = {
         id,
-        name: current.name.trim() || 'Untitled car',
+        name: doc.name.trim() || 'Untitled car',
         format: current.format,
         mainFile: current.mainFile,
-        transform: current.transform,
+        transform: doc.transform,
         stats: {
           ...stats,
           sizeBytes: current.files.reduce((sum, f) => sum + f.blob.size, 0),
           dimensions: placement.dimensions,
         },
-        build: current.build,
+        build: doc.build,
         thumbnail: captureRef.current?.(),
         createdAt: current.createdAt ?? now,
         updatedAt: now,
       }
       // Original files are immutable, so they're written only on the first save.
       await saveModel(record, current.savedId ? undefined : current.files)
-      setCurrent((c) => (c ? { ...c, savedId: id, createdAt: record.createdAt, dirty: false } : c))
+      setCurrent((c) => (c ? { ...c, savedId: id, createdAt: record.createdAt } : c))
+      setSavedDoc(doc)
       await refreshLibrary()
     })
 
@@ -261,74 +296,147 @@ export default function App() {
       if (current?.savedId === record.id) {
         current.dispose()
         setCurrent(null)
+        history.clear()
       }
       await refreshLibrary()
     })
   }
 
-  const update = (patch: Partial<Pick<OpenModel, 'name' | 'transform'>>) =>
-    current && setCurrent({ ...current, ...patch, dirty: true })
+  // ── Editing: every change goes through the history so it can be undone ──
+  const edit = history.commit
+  const update = (patch: Partial<Pick<EditDoc, 'name' | 'transform'>>) => {
+    if (!doc) return
+    if (patch.name !== undefined) return edit('Renamed car', (d) => ({ ...d, name: patch.name! }), 'name')
+    const t = patch.transform!
+    const label = t.targetLength !== doc.transform.targetLength ? `Length ${t.targetLength} m` : 'Changed orientation'
+    edit(label, (d) => ({ ...d, transform: t }))
+  }
 
-  // ── Parts / build editing ──
-  const updateBuild = (fn: (build: Build) => Build) =>
-    setCurrent((c) => (c ? { ...c, build: fn(c.build), dirty: true } : c))
-  const updatePart = (id: string, patch: Partial<PartInstance>) =>
-    updateBuild((b) => ({ ...b, parts: b.parts.map((part) => (part.id === id ? { ...part, ...patch } : part)) }))
+  const updateBuild = (label: string, fn: (build: Build) => Build, key?: string) =>
+    edit(label, (d) => ({ ...d, build: fn(d.build) }), key)
+  const updatePart = (id: string, patch: Partial<PartInstance>, label: string, key?: string) =>
+    updateBuild(label, (b) => ({ ...b, parts: b.parts.map((part) => (part.id === id ? { ...part, ...patch } : part)) }), key)
+  const nameOf = (id: string) => {
+    const part = doc?.build.parts.find((x) => x.id === id)
+    return part ? partName(part, assets) : 'part'
+  }
 
-  const addPart = (kind: string) => {
-    const def = CATALOG[kind]
-    if (!def || !placement) return
-    const dims = placement.dimensions
-    const { x, z } = def.anchor(dims)
-    const y = sceneApiRef.current?.surfaceBelow(x, z) ?? dims[1] * 0.75
-    const part: PartInstance = {
-      id: crypto.randomUUID(),
-      kind,
-      params: defaultParams(def, dims),
-      position: [x, y, z],
-      rotation: [0, 0, 0],
-      scale: [1, 1, 1],
-      finish: { ...def.defaultFinish },
-    }
-    updateBuild((b) => ({ ...b, parts: [...b.parts, part] }))
+  const insertPart = (part: PartInstance, label: string) => {
+    updateBuild(label, (b) => ({ ...b, parts: [...b.parts, part] }))
     setSelectedPartId(part.id)
     setGizmoMode('translate')
     setPanelTab('parts')
-    // Swing the camera to a 3/4 view of the end of the car where the part landed.
-    moveCamera({ dir: [0.95, 0.5, z < 0 ? -1.05 : 1.05] })
+  }
+
+  const addPart = (kind: string, presetId?: string) => {
+    const def = CATALOG[kind]
+    if (!def || !placement) return
+    const dims = placement.dimensions
+    const preset = def.presets.find((p) => p.id === presetId) ?? def.presets[0]
+    const position = def.place(dims, sceneApiRef.current)
+    const part: PartInstance = {
+      id: crypto.randomUUID(),
+      kind,
+      preset: preset?.id,
+      params: resolveParams(def, dims, preset),
+      position,
+      rotation: [0, 0, 0],
+      scale: [1, 1, 1],
+      finish: { ...(preset?.finish ?? def.defaultFinish) },
+    }
+    insertPart(part, `Added ${def.name}${preset ? ` · ${preset.name}` : ''}`)
+    // Swing the camera to a low 3/4 view of the end of the car where the part landed.
+    const low = position[1] < dims[1] * 0.4
+    moveCamera({ dir: [0.95, low ? 0.25 : 0.5, position[2] < 0 ? -1.05 : 1.05] })
+  }
+
+  /** Restyle a part from a preset; position, rotation and size stay. */
+  const applyPreset = (id: string, presetId: string) => {
+    const part = doc?.build.parts.find((x) => x.id === id)
+    const def = part && CATALOG[part.kind]
+    const preset = def?.presets.find((p) => p.id === presetId)
+    if (!part || !def || !preset || !placement) return
+    updatePart(
+      id,
+      { preset: preset.id, params: resolveParams(def, placement.dimensions, preset), finish: preset.finish ?? part.finish },
+      `Style: ${def.name} · ${preset.name}`,
+    )
+  }
+
+  /** Put an uploaded part on the roof center at a sensible size, then let the user click where it goes. */
+  const addAssetPart = (asset: PartAsset) => {
+    if (!placement) return
+    const h = placement.dimensions[1]
+    const fit = initialFit(asset, placement.dimensions)
+    insertPart(
+      {
+        id: crypto.randomUUID(),
+        kind: 'upload',
+        assetId: asset.id,
+        params: { fit },
+        position: [0, sceneApiRef.current?.surfaceBelow(0, 0) ?? h, 0],
+        rotation: [0, 0, 0],
+        scale: [fit, fit, fit],
+        finish: { type: 'original', color: '#111214' },
+      },
+      `Added ${asset.name}`,
+    )
+    setPickMode('place')
+  }
+
+  const uploadParts = (files: File[]) =>
+    run('Importing part…', async () => {
+      const asset = await importPartAsset(files)
+      await savePartAsset(asset)
+      setAssets((list) => [asset, ...list])
+      addAssetPart(asset)
+    })
+
+  const deleteAsset = (asset: PartAsset) => {
+    if (!confirm(`Delete "${asset.name}" from your parts library? Cars using it will show it as missing.`)) return
+    run('Deleting part…', async () => {
+      await deletePartAsset(asset.id)
+      forgetPartTemplate(asset.id)
+      setAssets((list) => list.filter((a) => a.id !== asset.id))
+    })
   }
 
   const removePart = (id: string) => {
-    updateBuild((b) => ({ ...b, parts: b.parts.filter((part) => part.id !== id) }))
+    updateBuild(`Removed ${nameOf(id)}`, (b) => ({ ...b, parts: b.parts.filter((part) => part.id !== id) }))
     setSelectedPartId((sel) => (sel === id ? null : sel))
   }
 
   const duplicatePart = (id: string) => {
-    const source = current?.build.parts.find((part) => part.id === id)
+    const source = doc?.build.parts.find((part) => part.id === id)
     if (!source) return
-    const copy: PartInstance = {
-      ...source,
-      id: crypto.randomUUID(),
-      position: [source.position[0], source.position[1] + 0.15, source.position[2]],
-    }
-    updateBuild((b) => ({ ...b, parts: [...b.parts, copy] }))
-    setSelectedPartId(copy.id)
+    insertPart(
+      { ...source, id: crypto.randomUUID(), position: [source.position[0], source.position[1] + 0.15, source.position[2]] },
+      `Duplicated ${nameOf(id)}`,
+    )
+  }
+
+  const transformPart = (id: string, patch: Pick<PartInstance, 'position' | 'rotation' | 'scale'>) => {
+    const verb = gizmoMode === 'translate' ? 'Moved' : gizmoMode === 'rotate' ? 'Rotated' : 'Resized'
+    updatePart(id, patch, `${verb} ${nameOf(id)}`)
   }
 
   /** Click on the body in "Place on body" mode; snaps to the center line when close to it. */
   const placeSelected = (point: Vec3) => {
     if (selectedPartId) {
       const x = Math.abs(point[0]) < 0.12 ? 0 : point[0]
-      updatePart(selectedPartId, { position: [x, point[1], point[2]] })
+      updatePart(selectedPartId, { position: [x, point[1], point[2]] }, `Placed ${nameOf(selectedPartId)}`)
     }
     setPickMode(null)
   }
 
-  const toggleHidden = (path: string) =>
-    updateBuild((b) => ({
+  const toggleHidden = (path: string) => {
+    const hidden = doc?.build.hidden.includes(path)
+    const label = `${hidden ? 'Showed' : 'Hid'} ${meshLabel(meshIndex?.byPath.get(path), path)}`
+    updateBuild(label, (b) => ({
       ...b,
       hidden: b.hidden.includes(path) ? b.hidden.filter((h) => h !== path) : [...b.hidden, path],
     }))
+  }
 
   const selectPart = (id: string | null) => {
     setSelectedPartId(id)
@@ -336,9 +444,14 @@ export default function App() {
     setPickMode((m) => (m === 'place' ? null : m))
   }
 
+  // Undo can remove the selected part; drop the selection then.
+  useEffect(() => {
+    if (selectedPartId && doc && !doc.build.parts.some((p) => p.id === selectedPartId)) setSelectedPartId(null)
+  }, [doc, selectedPartId])
+
   // Latest values for the global key handler without re-binding it on every change.
-  const partsKeys = useRef({ pickMode, selectedPartId, removePart })
-  partsKeys.current = { pickMode, selectedPartId, removePart }
+  const partsKeys = useRef({ pickMode, selectedPartId, removePart, history })
+  partsKeys.current = { pickMode, selectedPartId, removePart, history }
 
   const onDrop = async (e: DragEvent) => {
     e.preventDefault()
@@ -404,14 +517,15 @@ export default function App() {
           onViewDirection={requestDirection}
           hudRef={hudRef}
           parts={{
-            build: current?.build ?? EMPTY_BUILD,
+            build: doc?.build ?? EMPTY_BUILD,
+            assets: assetMap,
             meshIndex,
             selectedId: selectedPartId,
             gizmoMode,
             pickMode,
             apiRef: sceneApiRef,
             onSelect: selectPart,
-            onTransform: updatePart,
+            onTransform: transformPart,
             onPlace: placeSelected,
             onToggleHidden: toggleHidden,
           }}
@@ -448,9 +562,9 @@ export default function App() {
         )}
 
         {/* Free cam is immersive: settings hide (like a game HUD) and return on Esc. */}
-        {current && placement && stats && cameraMode !== 'fly' && (
+        {current && doc && placement && stats && cameraMode !== 'fly' && (
           <ModelPanel
-            model={current}
+            model={{ ...current, ...doc, dirty }}
             dimensions={placement.dimensions}
             stats={stats}
             toggles={[
@@ -465,20 +579,27 @@ export default function App() {
               { label: 'View cube', checked: settings.showViewCube, onChange: (v) => updateSettings({ showViewCube: v }) },
             ]}
             onChange={update}
-            onAutoOrient={() => update({ transform: { ...current.transform, rotation: autoOrient(current.bounds) } })}
+            onAutoOrient={() => update({ transform: { ...doc.transform, rotation: autoOrient(current.bounds) } })}
             onSave={save}
             saving={!!busy}
             tab={panelTab}
             onTab={setPanelTab}
-            partsCount={current.build.parts.length}
+            partsCount={doc.build.parts.length}
+            history={history}
+            historyPanel={<HistoryPanel history={history} />}
             partsPanel={
               <PartsPanel
-                build={current.build}
+                build={doc.build}
+                assets={assets}
                 meshIndex={meshIndex}
                 selectedId={selectedPartId}
                 gizmoMode={gizmoMode}
                 pickMode={pickMode}
                 onAdd={addPart}
+                onAddAsset={(id) => assetMap.get(id) && addAssetPart(assetMap.get(id)!)}
+                onUploadParts={uploadParts}
+                onDeleteAsset={deleteAsset}
+                onApplyPreset={applyPreset}
                 onSelect={selectPart}
                 onUpdate={updatePart}
                 onRemove={removePart}
@@ -486,7 +607,7 @@ export default function App() {
                 onGizmoMode={setGizmoMode}
                 onPickMode={setPickMode}
                 onToggleHidden={toggleHidden}
-                onShowAll={() => updateBuild((b) => ({ ...b, hidden: [] }))}
+                onShowAll={() => updateBuild('Showed all original parts', (b) => ({ ...b, hidden: [] }))}
               />
             }
           />

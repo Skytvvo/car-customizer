@@ -1,5 +1,5 @@
 import { openDB, type DBSchema } from 'idb'
-import type { ModelRecord, StoredFile } from './types'
+import type { ModelRecord, PartAsset, StoredFile } from './types'
 
 // Local-first storage. Keep this module the only place that knows about IndexedDB,
 // so it can be swapped for a server API later.
@@ -7,13 +7,17 @@ import type { ModelRecord, StoredFile } from './types'
 interface Schema extends DBSchema {
   models: { key: string; value: ModelRecord; indexes: { 'by-updated': number } }
   files: { key: string; value: { id: string; files: StoredFile[] } }
+  parts: { key: string; value: PartAsset }
 }
 
-const dbPromise = openDB<Schema>('car-customizer', 1, {
-  upgrade(db) {
-    const models = db.createObjectStore('models', { keyPath: 'id' })
-    models.createIndex('by-updated', 'updatedAt')
-    db.createObjectStore('files', { keyPath: 'id' })
+const dbPromise = openDB<Schema>('car-customizer', 2, {
+  upgrade(db, oldVersion) {
+    if (oldVersion < 1) {
+      const models = db.createObjectStore('models', { keyPath: 'id' })
+      models.createIndex('by-updated', 'updatedAt')
+      db.createObjectStore('files', { keyPath: 'id' })
+    }
+    if (oldVersion < 2) db.createObjectStore('parts', { keyPath: 'id' })
   },
 })
 
@@ -50,4 +54,21 @@ export async function deleteModel(id: string) {
 
 export async function storageUsage(): Promise<number | undefined> {
   return (await navigator.storage?.estimate?.())?.usage
+}
+
+// ── Parts library ──
+
+export async function listPartAssets(): Promise<PartAsset[]> {
+  const db = await dbPromise
+  return (await db.getAll('parts')).sort((a, b) => b.createdAt - a.createdAt)
+}
+
+export async function savePartAsset(asset: PartAsset) {
+  const db = await dbPromise
+  await db.put('parts', asset)
+}
+
+export async function deletePartAsset(id: string) {
+  const db = await dbPromise
+  await db.delete('parts', id)
 }

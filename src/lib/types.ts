@@ -37,3 +37,16 @@ export interface ModelRecord {
   createdAt: number
   updatedAt: number
 }
+
+/** A part the user uploaded into their parts library (spoiler, mirrors, a whole body kit…). */
+export interface PartAsset {
+  id: string
+  name: string
+  mainFile: string
+  files: StoredFile[]
+  /** Unit guess applied on load (e.g. 0.001 for millimeters). */
+  unitScale: number
+  /** Size in meters after unitScale: width (X), height (Y), depth (Z). */
+  size: [number, number, number]
+  createdAt: number
+}

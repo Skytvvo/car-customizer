@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { Finish, FinishType } from '../lib/build'
 
 export const FINISHES: { type: FinishType; label: string }[] = [
+  { type: 'original', label: 'Original' },
   { type: 'gloss', label: 'Gloss' },
   { type: 'metallic', label: 'Metallic' },
   { type: 'satin', label: 'Satin' },
@@ -67,5 +68,8 @@ export function createFinishMaterial({ type, color }: Finish): THREE.MeshPhysica
       })
     case 'chrome':
       return new THREE.MeshPhysicalMaterial({ ...base, roughness: 0.04, metalness: 1 })
+    case 'original':
+      // Only meaningful for uploaded parts (their own materials are kept); built-ins fall back to gloss.
+      return new THREE.MeshPhysicalMaterial({ ...base, roughness: 0.25, clearcoat: 1 })
   }
 }

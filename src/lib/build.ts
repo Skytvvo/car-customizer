@@ -2,25 +2,44 @@ import * as THREE from 'three'
 
 export type Vec3 = [number, number, number]
 
-export type FinishType = 'gloss' | 'metallic' | 'satin' | 'matte' | 'carbon' | 'chrome'
+/** 'original' keeps an uploaded part's own materials. */
+export type FinishType = 'original' | 'gloss' | 'metallic' | 'satin' | 'matte' | 'carbon' | 'chrome'
 
 export interface Finish {
   type: FinishType
   color: string
 }
 
-export type PartParams = Record<string, number | boolean>
+export type PartParams = Record<string, number | boolean | string>
+
+/** Shape modifiers, applied along the part's longest horizontal side (its "span"). Angles in degrees. */
+export interface Deform {
+  /** Arc in the vertical plane: positive curls the ends up. */
+  bend: number
+  /** Arc seen from above: positive sweeps the ends back (−Z). */
+  sweep: number
+  /** Opposite rotation of the two ends around the span. */
+  twist: number
+  /** 0–0.9: how much smaller the cross-section gets toward the ends. */
+  taper: number
+}
 
 /** An add-on part placed on the car. Positions are in the normalized car space (meters, car centered, ground at y = 0). */
 export interface PartInstance {
   id: string
-  /** Built-in generator, e.g. 'gt-wing'. */
+  /** Built-in generator (e.g. 'gt-wing') or 'upload' for a part from the user's library. */
   kind: string
+  /** For uploaded parts: id in the parts library. */
+  assetId?: string
+  /** Preset the part started from, shown in the editor. */
+  preset?: string
   params: PartParams
   position: Vec3
   rotation: Vec3
   scale: Vec3
   finish: Finish
+  /** Bend / sweep / twist / taper; missing means straight. */
+  deform?: Deform
 }
 
 /**
@@ -73,4 +92,12 @@ export function isShown(obj: THREE.Object3D | null) {
 
 export function firstShownHit(raycaster: THREE.Raycaster, target: THREE.Object3D) {
   return raycaster.intersectObject(target, true).find((hit) => isShown(hit.object))
+}
+
+/** Scene queries used to drop new parts onto the car's surface. */
+export interface SceneQuery {
+  /** Height of the car's visible top surface at (x, z), looking down from above. */
+  surfaceBelow: (x: number, z: number) => number | null
+  /** Height of the car's underside at (x, z), looking up from below. */
+  surfaceAbove: (x: number, z: number) => number | null
 }

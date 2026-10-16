@@ -2,7 +2,11 @@ import { useEffect, useMemo, useRef, useState, type MutableRefObject, type RefOb
 import * as THREE from 'three'
 import { useThree, type ThreeEvent } from '@react-three/fiber'
 import { TransformControls } from '@react-three/drei'
-import { firstShownHit, type Build, type MeshIndex, type PartInstance, type Vec3 } from '../lib/build'
+import { firstShownHit, type Build, type MeshIndex, type PartInstance, type SceneQuery, type Vec3 } from '../lib/build'
+import type { PartAsset } from '../lib/types'
+import { loadPartTemplate } from '../parts/uploaded'
+import { deformObject, disposeDeformed, isDeformed } from '../parts/deform'
+import type { Deform } from '../lib/build'
 import { CATALOG } from '../parts/catalog'
 import { createFinishMaterial } from '../parts/finishes'
 import { disposeGroup } from '../parts/geometry'
@@ -10,14 +14,11 @@ import { disposeGroup } from '../parts/geometry'
 export type GizmoMode = 'translate' | 'rotate' | 'scale'
 export type PickMode = 'place' | 'hide' | null
 
-/** Scene queries the DOM side needs (e.g. where a new part should land). */
-export interface SceneApi {
-  /** Height of the car's visible surface below (x, z), or null if nothing is there. */
-  surfaceBelow: (x: number, z: number) => number | null
-}
+export type SceneApi = SceneQuery
 
-interface Props {
+export interface PartsLayerProps {
   build: Build
+  assets: Map<string, PartAsset>
   meshIndex: MeshIndex | null
   modelRef: RefObject<THREE.Object3D | null>
   selectedId: string | null
@@ -30,7 +31,7 @@ interface Props {
   onToggleHidden: (path: string) => void
 }
 
-export default function PartsLayer(props: Props) {
+export default function PartsLayer(props: PartsLayerProps) {
   const { build, meshIndex, modelRef, selectedId, gizmoMode, pickMode } = props
   const gl = useThree((s) => s.gl)
   const camera = useThree((s) => s.camera)
@@ -47,13 +48,15 @@ export default function PartsLayer(props: Props) {
 
   useEffect(() => {
     const raycaster = new THREE.Raycaster()
+    const cast = (x: number, z: number, fromY: number, dirY: number) => {
+      const model = modelRef.current
+      if (!model) return null
+      raycaster.set(new THREE.Vector3(x, fromY, z), new THREE.Vector3(0, dirY, 0))
+      return firstShownHit(raycaster, model)?.point.y ?? null
+    }
     props.apiRef.current = {
-      surfaceBelow: (x, z) => {
-        const model = modelRef.current
-        if (!model) return null
-        raycaster.set(new THREE.Vector3(x, 100, z), new THREE.Vector3(0, -1, 0))
-        return firstShownHit(raycaster, model)?.point.y ?? null
-      },
+      surfaceBelow: (x, z) => cast(x, z, 100, -1),
+      surfaceAbove: (x, z) => cast(x, z, -1, 1),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelRef])
@@ -111,6 +114,7 @@ export default function PartsLayer(props: Props) {
         <PartObject
           key={part.id}
           part={part}
+          asset={part.assetId ? props.assets.get(part.assetId) : undefined}
           groupRef={part.id === selectedId ? setSelectedObject : undefined}
           onSelect={props.onSelect}
         />
@@ -130,20 +134,15 @@ export default function PartsLayer(props: Props) {
 
 function PartObject({
   part,
+  asset,
   groupRef,
   onSelect,
 }: {
   part: PartInstance
+  asset?: PartAsset
   groupRef?: (g: THREE.Group | null) => void
   onSelect: (id: string) => void
 }) {
-  const def = CATALOG[part.kind]
-  const material = useMemo(() => createFinishMaterial(part.finish), [part.finish])
-  const object = useMemo(() => def?.build(part.params, material) ?? new THREE.Group(), [def, part.params, material])
-
-  useEffect(() => () => material.dispose(), [material])
-  useEffect(() => () => disposeGroup(object), [object])
-
   const onClick = (e: ThreeEvent<MouseEvent>) => {
     if (e.delta > 5) return // that was a drag
     e.stopPropagation()
@@ -152,7 +151,61 @@ function PartObject({
 
   return (
     <group ref={groupRef} position={part.position} rotation={part.rotation} scale={part.scale} onClick={onClick}>
-      <primitive object={object} />
+      {part.kind === 'upload' ? <UploadedPart part={part} asset={asset} /> : <BuiltInPart part={part} />}
     </group>
   )
+}
+
+/** Generated from the catalog's builder; rebuilt when sliders change. */
+function BuiltInPart({ part }: { part: PartInstance }) {
+  const def = CATALOG[part.kind]
+  const material = useMemo(() => createFinishMaterial(part.finish), [part.finish])
+  const object = useMemo(() => def?.build(part.params, material) ?? new THREE.Group(), [def, part.params, material])
+
+  useEffect(() => () => material.dispose(), [material])
+  useEffect(() => () => disposeGroup(object), [object])
+
+  return <primitive object={useDeformed(object, part.deform)} />
+}
+
+/** A clone of the user's uploaded model; a finish other than "Original" replaces its materials. */
+function UploadedPart({ part, asset }: { part: PartInstance; asset?: PartAsset }) {
+  const [template, setTemplate] = useState<THREE.Object3D | null>(null)
+
+  useEffect(() => {
+    if (!asset) return
+    let alive = true
+    loadPartTemplate(asset)
+      .then((t) => alive && setTemplate(t))
+      .catch((e) => console.error('Could not load part', e))
+    return () => {
+      alive = false
+    }
+  }, [asset])
+
+  const material = useMemo(
+    () => (part.finish.type === 'original' ? null : createFinishMaterial(part.finish)),
+    [part.finish],
+  )
+  // Clones share geometry and original materials with the template, so only our own material is disposed.
+  const object = useMemo(() => {
+    if (!template) return null
+    const clone = template.clone(true)
+    if (material) clone.traverse((o) => ((o as THREE.Mesh).isMesh ? ((o as THREE.Mesh).material = material) : null))
+    return clone
+  }, [template, material])
+  useEffect(() => () => material?.dispose(), [material])
+
+  const shaped = useDeformed(object, part.deform)
+  return shaped ? <primitive object={shaped} /> : null
+}
+
+/** Bent/swept/twisted copy of a part when it has shape modifiers; the original otherwise. */
+function useDeformed<T extends THREE.Object3D | null>(object: T, deform: Deform | undefined): T | THREE.Object3D {
+  const deformed = useMemo(
+    () => (object && deform && isDeformed(deform) ? deformObject(object, deform) : null),
+    [object, deform],
+  )
+  useEffect(() => () => (deformed ? disposeDeformed(deformed) : undefined), [deformed])
+  return deformed ?? object
 }

@@ -1,18 +1,29 @@
+import { useRef, useState, type ReactNode } from 'react'
 import type { Build, FinishType, MeshIndex, PartInstance } from '../lib/build'
 import { meshLabel } from '../lib/build'
-import { CATALOG, formatParam } from '../parts/catalog'
+import type { PartAsset } from '../lib/types'
+import { ACCEPT } from '../lib/loaders'
+import { CATALOG, formatParam, partName } from '../parts/catalog'
 import { FINISHES, SWATCHES } from '../parts/finishes'
+import { isDeformed, NO_DEFORM } from '../parts/deform'
+import type { Deform } from '../lib/build'
 import type { GizmoMode, PickMode } from './PartsLayer'
 
 interface Props {
   build: Build
+  assets: PartAsset[]
   meshIndex: MeshIndex | null
   selectedId: string | null
   gizmoMode: GizmoMode
   pickMode: PickMode
-  onAdd: (kind: string) => void
+  onAdd: (kind: string, presetId?: string) => void
+  onAddAsset: (assetId: string) => void
+  onUploadParts: (files: File[]) => void
+  onDeleteAsset: (asset: PartAsset) => void
   onSelect: (id: string | null) => void
-  onUpdate: (id: string, patch: Partial<PartInstance>) => void
+  /** `label` names the step in the history; edits sharing `key` within a moment merge into one step. */
+  onUpdate: (id: string, patch: Partial<PartInstance>, label: string, key?: string) => void
+  onApplyPreset: (id: string, presetId: string) => void
   onRemove: (id: string) => void
   onDuplicate: (id: string) => void
   onGizmoMode: (mode: GizmoMode) => void
@@ -21,6 +32,13 @@ interface Props {
   onShowAll: () => void
 }
 
+const SHAPE_CONTROLS: { key: keyof Deform; label: string; hint: string; min: number; max: number; step: number }[] = [
+  { key: 'bend', label: 'Bend', hint: 'Curl the ends up (or down)', min: -60, max: 60, step: 1 },
+  { key: 'sweep', label: 'Sweep', hint: 'Curve the ends back (or forward), seen from above', min: -60, max: 60, step: 1 },
+  { key: 'twist', label: 'Twist', hint: 'Twist the two ends in opposite directions', min: -60, max: 60, step: 1 },
+  { key: 'taper', label: 'Taper', hint: 'Make the part thinner toward its ends', min: 0, max: 0.9, step: 0.01 },
+]
+
 const GIZMO_MODES: { mode: GizmoMode; label: string }[] = [
   { mode: 'translate', label: 'Move' },
   { mode: 'rotate', label: 'Rotate' },
@@ -28,8 +46,13 @@ const GIZMO_MODES: { mode: GizmoMode; label: string }[] = [
 ]
 
 export default function PartsPanel(p: Props) {
+  const [openKind, setOpenKind] = useState<string | null>(null)
+  const uploadInput = useRef<HTMLInputElement>(null)
   const selected = p.build.parts.find((part) => part.id === p.selectedId) ?? null
-  const def = selected ? CATALOG[selected.kind] : null
+  const def = selected && selected.kind !== 'upload' ? CATALOG[selected.kind] : null
+  const name = selected ? partName(selected, p.assets) : ''
+  const update = (patch: Partial<PartInstance>, label: string, key?: string) =>
+    selected && p.onUpdate(selected.id, patch, label, key)
 
   return (
     <div className="parts">
@@ -37,25 +60,71 @@ export default function PartsPanel(p: Props) {
         <h4>Add part</h4>
         <div className="catalog">
           {Object.values(CATALOG).map((d) => (
-            <button key={d.kind} className="catalog-card" onClick={() => p.onAdd(d.kind)} title={d.description}>
-              <WingIcon />
+            <button
+              key={d.kind}
+              className="catalog-card"
+              aria-expanded={openKind === d.kind}
+              onClick={() => setOpenKind(openKind === d.kind ? null : d.kind)}
+              title={d.description}
+            >
+              {ICONS[d.kind]}
               <span>{d.name}</span>
             </button>
           ))}
-          <div className="catalog-card soon" aria-hidden>
-            <span>More parts soon</span>
-          </div>
         </div>
+        {openKind && (
+          <div className="presets" role="group" aria-label={`${CATALOG[openKind].name} styles`}>
+            {CATALOG[openKind].presets.map((preset) => (
+              <button key={preset.id} className="preset" onClick={() => p.onAdd(openKind, preset.id)}>
+                + {preset.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h4>My parts</h4>
+        <input
+          ref={uploadInput}
+          type="file"
+          multiple
+          accept={ACCEPT}
+          hidden
+          onChange={(e) => {
+            const files = [...(e.target.files ?? [])]
+            e.target.value = ''
+            if (files.length) p.onUploadParts(files)
+          }}
+        />
+        <button className="btn btn-block" onClick={() => uploadInput.current?.click()}>
+          Upload part (.glb, .fbx, .obj, .zip)
+        </button>
+        {p.assets.length > 0 && (
+          <ul className="part-list">
+            {p.assets.map((asset) => (
+              <li key={asset.id}>
+                <button className="part-name" onClick={() => p.onAddAsset(asset.id)} title="Add to the car">
+                  + {asset.name}
+                  <small> {asset.size.map((v) => Math.round(v * 100)).join('×')} cm</small>
+                </button>
+                <button className="btn-icon subtle" onClick={() => p.onDeleteAsset(asset)} title="Delete from library">
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       {p.build.parts.length > 0 && (
         <section>
           <h4>Installed</h4>
           <ul className="part-list">
-            {p.build.parts.map((part, i) => (
+            {p.build.parts.map((part) => (
               <li key={part.id} className={part.id === p.selectedId ? 'active' : undefined}>
                 <button className="part-name" onClick={() => p.onSelect(part.id === p.selectedId ? null : part.id)}>
-                  {CATALOG[part.kind]?.name ?? part.kind} {countLabel(p.build.parts, part, i)}
+                  {partName(part, p.assets)}
                 </button>
                 <button className="btn-icon subtle" onClick={() => p.onDuplicate(part.id)} title="Duplicate">
                   ⧉
@@ -69,9 +138,25 @@ export default function PartsPanel(p: Props) {
         </section>
       )}
 
-      {selected && def && (
+      {selected && (
         <section className="part-editor">
-          <h4>{def.name}</h4>
+          <h4>{name}</h4>
+
+          {def && (
+            <div className="presets" role="group" aria-label="Style">
+              {def.presets.map((preset) => (
+                <button
+                  key={preset.id}
+                  className="preset"
+                  aria-pressed={selected.preset === preset.id}
+                  onClick={() => p.onApplyPreset(selected.id, preset.id)}
+                >
+                  {preset.name}
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="segmented small" role="group" aria-label="Gizmo">
             {GIZMO_MODES.map((g) => (
               <button key={g.mode} aria-pressed={p.gizmoMode === g.mode} onClick={() => p.onGizmoMode(g.mode)}>
@@ -89,68 +174,120 @@ export default function PartsPanel(p: Props) {
             </button>
             <button
               className="btn"
-              onClick={() => p.onUpdate(selected.id, { position: [0, selected.position[1], selected.position[2]] })}
+              onClick={() => update({ position: [0, selected.position[1], selected.position[2]] }, `Centered ${name}`)}
               title="Center on the car's middle line"
             >
               Center
             </button>
             <button
               className="btn"
-              onClick={() => p.onUpdate(selected.id, { rotation: [0, 0, 0], scale: [1, 1, 1] })}
+              onClick={() => {
+                const fit = Number(selected.params.fit ?? 1)
+                update({ rotation: [0, 0, 0], scale: [fit, fit, fit] }, `Reset ${name}`)
+              }}
               title="Reset rotation and size"
             >
               Reset
             </button>
           </div>
 
-          <div className="params">
-            {def.params.map((param) =>
-              param.kind === 'toggle' ? (
-                <label key={param.key} className="check-row">
+          {def && (
+            <div className="params">
+              {def.params.map((param) => {
+                const key = `param:${selected.id}:${param.key}`
+                const set = (value: number | boolean | string) =>
+                  update({ params: { ...selected.params, [param.key]: value } }, `${param.label}: ${name}`, key)
+                if (param.kind === 'toggle') {
+                  return (
+                    <label key={param.key} className="check-row">
+                      <input type="checkbox" checked={Boolean(selected.params[param.key])} onChange={(e) => set(e.target.checked)} />
+                      {param.label}
+                    </label>
+                  )
+                }
+                if (param.kind === 'select') {
+                  return (
+                    <div key={param.key} className="select-field">
+                      <span>{param.label}</span>
+                      <div className="chips">
+                        {param.options.map((o) => (
+                          <button key={o.value} className="chip" aria-pressed={selected.params[param.key] === o.value} onClick={() => set(o.value)}>
+                            {o.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                }
+                return (
+                  <div key={param.key} className="slider-field compact">
+                    <label htmlFor={`param-${param.key}`}>{param.label}</label>
+                    <input
+                      id={`param-${param.key}`}
+                      type="range"
+                      min={param.min}
+                      max={param.max}
+                      step={param.step}
+                      value={Number(selected.params[param.key])}
+                      onChange={(e) => set(Number(e.target.value))}
+                    />
+                    <output>{formatParam(param, selected.params[param.key])}</output>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          <div className="shape">
+            <div className="shape-head">
+              <span className="label">Shape</span>
+              {isDeformed(selected.deform) && (
+                <button className="btn-link" onClick={() => update({ deform: undefined }, `Straightened ${name}`)}>
+                  Straighten
+                </button>
+              )}
+            </div>
+            {SHAPE_CONTROLS.map((c) => {
+              const value = selected.deform?.[c.key] ?? 0
+              const set = (v: number) =>
+                update({ deform: { ...NO_DEFORM, ...selected.deform, [c.key]: v } }, `${c.label}: ${name}`, `deform:${selected.id}:${c.key}`)
+              return (
+                <div key={c.key} className="slider-field compact">
+                  <label htmlFor={`shape-${c.key}`} title={c.hint}>
+                    {c.label}
+                  </label>
                   <input
-                    type="checkbox"
-                    checked={Boolean(selected.params[param.key])}
-                    onChange={(e) =>
-                      p.onUpdate(selected.id, { params: { ...selected.params, [param.key]: e.target.checked } })
-                    }
-                  />
-                  {param.label}
-                </label>
-              ) : (
-                <div key={param.key} className="slider-field compact">
-                  <label htmlFor={`param-${param.key}`}>{param.label}</label>
-                  <input
-                    id={`param-${param.key}`}
+                    id={`shape-${c.key}`}
                     type="range"
-                    min={param.min}
-                    max={param.max}
-                    step={param.step}
-                    value={Number(selected.params[param.key])}
-                    onChange={(e) =>
-                      p.onUpdate(selected.id, { params: { ...selected.params, [param.key]: Number(e.target.value) } })
-                    }
+                    min={c.min}
+                    max={c.max}
+                    step={c.step}
+                    value={value}
+                    onChange={(e) => set(Number(e.target.value))}
+                    onDoubleClick={() => set(0)}
+                    title="Double-click to reset"
                   />
-                  <output>{formatParam(param, selected.params[param.key])}</output>
+                  <output>{c.key === 'taper' ? `${Math.round(value * 100)}%` : `${value}°`}</output>
                 </div>
-              ),
-            )}
+              )
+            })}
           </div>
 
           <div className="finish">
             <span className="label">Finish</span>
             <div className="chips">
-              {FINISHES.map((f) => (
+              {FINISHES.filter((f) => f.type !== 'original' || selected.kind === 'upload').map((f) => (
                 <button
                   key={f.type}
                   className="chip"
                   aria-pressed={selected.finish.type === f.type}
-                  onClick={() => p.onUpdate(selected.id, { finish: { ...selected.finish, type: f.type as FinishType } })}
+                  onClick={() => update({ finish: { ...selected.finish, type: f.type as FinishType } }, `${f.label} finish: ${name}`)}
                 >
                   {f.label}
                 </button>
               ))}
             </div>
-            {selected.finish.type !== 'carbon' && (
+            {selected.finish.type !== 'carbon' && selected.finish.type !== 'original' && (
               <div className="swatches">
                 {SWATCHES.map((color) => (
                   <button
@@ -159,13 +296,15 @@ export default function PartsPanel(p: Props) {
                     style={{ background: color }}
                     aria-label={`Color ${color}`}
                     aria-pressed={selected.finish.color.toLowerCase() === color}
-                    onClick={() => p.onUpdate(selected.id, { finish: { ...selected.finish, color } })}
+                    onClick={() => update({ finish: { ...selected.finish, color } }, `Color: ${name}`)}
                   />
                 ))}
                 <input
                   type="color"
                   value={selected.finish.color}
-                  onChange={(e) => p.onUpdate(selected.id, { finish: { ...selected.finish, color: e.target.value } })}
+                  onChange={(e) =>
+                    update({ finish: { ...selected.finish, color: e.target.value } }, `Color: ${name}`, `color:${selected.id}`)
+                  }
                   aria-label="Custom color"
                 />
               </div>
@@ -205,20 +344,45 @@ export default function PartsPanel(p: Props) {
   )
 }
 
-/** "#2" suffix when there are several parts of the same kind. */
-function countLabel(parts: PartInstance[], part: PartInstance, index: number) {
-  const same = parts.filter((x) => x.kind === part.kind)
-  if (same.length < 2) return ''
-  return `#${parts.slice(0, index + 1).filter((x) => x.kind === part.kind).length}`
-}
+const svg = (children: ReactNode) => (
+  <svg viewBox="0 0 64 32" width="52" height="26" aria-hidden fill="currentColor">
+    {children}
+  </svg>
+)
 
-function WingIcon() {
-  return (
-    <svg viewBox="0 0 64 32" width="56" height="28" aria-hidden>
-      <path d="M6 10 Q32 4 58 10 L58 14 Q32 9 6 14 Z" fill="currentColor" />
-      <rect x="4" y="6" width="3" height="12" rx="1" fill="currentColor" />
-      <rect x="57" y="6" width="3" height="12" rx="1" fill="currentColor" />
-      <path d="M20 13 L18 28 L22 28 L24 13 Z M44 13 L46 28 L42 28 L40 13 Z" fill="currentColor" opacity="0.7" />
-    </svg>
-  )
+const ICONS: Record<string, ReactNode> = {
+  'gt-wing': svg(
+    <>
+      <path d="M6 10 Q32 4 58 10 L58 14 Q32 9 6 14 Z" />
+      <rect x="4" y="6" width="3" height="12" rx="1" />
+      <rect x="57" y="6" width="3" height="12" rx="1" />
+      <path d="M20 13 L18 28 L22 28 L24 13 Z M44 13 L46 28 L42 28 L40 13 Z" opacity="0.7" />
+    </>,
+  ),
+  ducktail: svg(<path d="M4 24 L44 24 Q54 22 60 10 L62 12 Q56 26 44 28 L4 28 Z" />),
+  splitter: svg(
+    <>
+      <path d="M4 12 Q32 6 60 12 L60 16 Q32 10 4 16 Z" opacity="0.5" />
+      <path d="M2 20 L62 20 L58 26 L6 26 Z" />
+    </>,
+  ),
+  skirts: svg(
+    <>
+      <path d="M4 8 L60 8 L60 14 L4 14 Z" opacity="0.4" />
+      <path d="M4 18 L60 18 L58 26 L6 26 Z" />
+    </>,
+  ),
+  diffuser: svg(
+    <>
+      <path d="M4 10 L60 10 L54 16 L10 16 Z" />
+      <path d="M14 16 L16 28 L18 16 Z M24 16 L26 28 L28 16 Z M36 16 L38 28 L40 16 Z M46 16 L48 28 L50 16 Z" opacity="0.7" />
+    </>,
+  ),
+  canards: svg(
+    <>
+      <path d="M4 14 L22 8 L24 12 L6 18 Z" />
+      <path d="M60 14 L42 8 L40 12 L58 18 Z" />
+      <path d="M6 22 L20 18 L22 21 L8 25 Z M58 22 L44 18 L42 21 L56 25 Z" opacity="0.6" />
+    </>,
+  ),
 }
