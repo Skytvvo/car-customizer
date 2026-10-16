@@ -6,14 +6,19 @@ import { viewPose, type CameraMode, type ViewRequest } from '../lib/camera'
 
 type Dims = [number, number, number]
 
+/** Camera offset from the target is interpolated on a sphere, so the camera arcs around the car instead of cutting through it. */
 interface Tween {
-  fromPos: THREE.Vector3
-  toPos: THREE.Vector3
   fromTarget: THREE.Vector3
   toTarget: THREE.Vector3
+  from: THREE.Spherical
+  to: THREE.Spherical
+  /** Shortest signed turn around the vertical axis. */
+  dTheta: number
   t: number
   duration: number
 }
+
+const tmpOffset = new THREE.Vector3()
 
 const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2)
 
@@ -42,7 +47,12 @@ export function CameraRig({ modelKey, dims, mode, viewRequest, modelRef, onFocus
     // Start from a point straight ahead so the turn is smooth even if the free cam moved off the orbit target.
     const ahead = camera.getWorldDirection(new THREE.Vector3())
     const fromTarget = camera.position.clone().addScaledVector(ahead, camera.position.distanceTo(controls.target))
-    tween.current = { fromPos: camera.position.clone(), toPos, fromTarget, toTarget, t: 0, duration }
+    const from = new THREE.Spherical().setFromVector3(tmpOffset.subVectors(camera.position, fromTarget))
+    const to = new THREE.Spherical().setFromVector3(tmpOffset.subVectors(toPos, toTarget))
+    // When looking straight down/up, azimuth is meaningless: keep the current heading.
+    if (from.phi < 1e-5 || from.phi > Math.PI - 1e-5) from.theta = to.theta
+    const dTheta = THREE.MathUtils.euclideanModulo(to.theta - from.theta + Math.PI, Math.PI * 2) - Math.PI
+    tween.current = { fromTarget, toTarget, from, to, dTheta, t: 0, duration }
   }
 
   // Jump to the standard view when a model opens or its size/orientation changes (not on window resize).
@@ -117,8 +127,13 @@ export function CameraRig({ modelKey, dims, mode, viewRequest, modelRef, onFocus
     if (!tw || !controls) return
     tw.t = Math.min(1, tw.t + dt / tw.duration)
     const k = easeInOutCubic(tw.t)
-    camera.position.lerpVectors(tw.fromPos, tw.toPos, k)
     controls.target.lerpVectors(tw.fromTarget, tw.toTarget, k)
+    const s = new THREE.Spherical(
+      THREE.MathUtils.lerp(tw.from.radius, tw.to.radius, k),
+      THREE.MathUtils.lerp(tw.from.phi, tw.to.phi, k),
+      tw.from.theta + tw.dTheta * k,
+    )
+    camera.position.setFromSpherical(s).add(controls.target)
     camera.lookAt(controls.target)
     if (tw.t >= 1) tween.current = null
   })

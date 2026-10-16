@@ -10,7 +10,8 @@ export const VIEWS = {
   front: { label: 'Front', dir: [0, 0.12, 1] },
   side: { label: 'Side', dir: [1, 0.08, 0] },
   rear: { label: 'Rear', dir: [0, 0.12, -1] },
-  top: { label: 'Top', dir: [0, 1, 0.0001] },
+  // Slightly behind the car so the front points up the screen (straight down has no defined heading).
+  top: { label: 'Top', dir: [0, 1, -0.001] },
   low: { label: 'Low', dir: [-0.9, 0.06, 1] },
 } as const
 
