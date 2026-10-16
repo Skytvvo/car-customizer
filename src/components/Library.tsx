@@ -1,5 +1,7 @@
 import type { ModelRecord } from '../lib/types'
 import { formatBytes } from '../lib/format'
+import { tip } from '../lib/tip'
+import { Trash2 } from 'lucide-react'
 
 interface Props {
   models: ModelRecord[]
@@ -26,8 +28,8 @@ export default function Library({ models, activeId, usage, onOpen, onDelete }: P
                 {r.format.toUpperCase()} · {r.stats.dimensions[2].toFixed(2)} m · {formatBytes(r.stats.sizeBytes)}
               </span>
             </button>
-            <button className="btn-icon delete" onClick={() => onDelete(r)} aria-label={`Delete ${r.name}`}>
-              ×
+            <button className="btn-icon delete" onClick={() => onDelete(r)} {...tip(`Delete ${r.name}`, 'Removes this car and its saved build from this browser.')}>
+              <Trash2 size={14} />
             </button>
           </li>
         ))}

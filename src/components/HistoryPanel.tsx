@@ -1,4 +1,6 @@
 import type { History } from '../lib/history'
+import { tip } from '../lib/tip'
+import { Redo2, Undo2 } from 'lucide-react'
 
 const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
@@ -8,11 +10,11 @@ export default function HistoryPanel({ history }: { history: History }) {
   return (
     <div className="history">
       <div className="btn-row">
-        <button className="btn" onClick={history.undo} disabled={!history.canUndo} title="Undo (Ctrl+Z)">
-          ↶ Undo
+        <button className="btn" onClick={history.undo} disabled={!history.canUndo} {...tip('Undo', 'Steps back one change.', 'Ctrl+Z')}>
+          <Undo2 size={14} /> Undo
         </button>
-        <button className="btn" onClick={history.redo} disabled={!history.canRedo} title="Redo (Ctrl+Shift+Z)">
-          ↷ Redo
+        <button className="btn" onClick={history.redo} disabled={!history.canRedo} {...tip('Redo', 'Re-applies the change you undid.', 'Ctrl+Shift+Z')}>
+          <Redo2 size={14} /> Redo
         </button>
       </div>
       <ol className="history-list" reversed>

@@ -17,6 +17,10 @@ import { deleteModel, getModelFiles, listModels, saveModel, storageUsage } from 
 import { filesFromDrop } from './lib/dropFiles'
 import PartsPanel from './components/PartsPanel'
 import HistoryPanel from './components/HistoryPanel'
+import DragReadout from './components/DragReadout'
+import Tooltips from './components/Tooltips'
+import { tip } from './lib/tip'
+import { Settings as SettingsIcon, Upload } from 'lucide-react'
 import type { GizmoMode, PickMode, SceneApi } from './components/PartsLayer'
 import type { PanelTab } from './components/ModelPanel'
 import { emptyBuild, indexMeshes, meshLabel, type Build, type PartInstance, type Vec3 } from './lib/build'
@@ -28,6 +32,9 @@ import type { ModelRecord, PartAsset, StoredFile } from './lib/types'
 
 const DEFAULT_LENGTH = 4.5
 const EMPTY_BUILD = emptyBuild()
+
+/** Unity-style gizmo shortcuts while a part is selected. */
+const GIZMO_KEYS: Record<string, GizmoMode> = { KeyW: 'translate', KeyE: 'rotate', KeyR: 'scale' }
 
 const TEXT_INPUT_TYPES = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number'])
 /** Fields with their own text undo, where Ctrl+Z must not undo app edits. */
@@ -167,6 +174,13 @@ export default function App() {
         return
       }
       const typing = target?.closest?.('input, textarea, select, [contenteditable], dialog')
+      // Arrow nudging accepts Shift (10 cm) and Alt (up/down) and repeats while held.
+      const nudging = !typing && e.code.startsWith('Arrow') && partsKeys.current.selectedPartId && cameraModeRef.current === 'orbit'
+      if (nudging && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault()
+        partsKeys.current.nudge(e.code, e.shiftKey ? 0.1 : 0.01, e.altKey)
+        return
+      }
       if (typing || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
       if (e.code === 'KeyF') changeCameraMode(cameraModeRef.current === 'fly' ? 'orbit' : 'fly')
       // Esc steps back one level: cancel picking → deselect part → leave free cam.
@@ -178,6 +192,8 @@ export default function App() {
         else setCameraMode('orbit')
       } else if ((e.code === 'Delete' || e.code === 'Backspace') && partsKeys.current.selectedPartId) {
         partsKeys.current.removePart(partsKeys.current.selectedPartId)
+      } else if (partsKeys.current.selectedPartId && cameraModeRef.current === 'orbit' && GIZMO_KEYS[e.code]) {
+        setGizmoMode(GIZMO_KEYS[e.code])
       }
       else if (e.code === 'KeyM') setSettings((s) => ({ ...s, showMinimap: !s.showMinimap }))
       else if (/^Digit[1-9]$/.test(e.code) && views[Number(e.code.slice(5)) - 1]) {
@@ -450,8 +466,34 @@ export default function App() {
   }, [doc, selectedPartId])
 
   // Latest values for the global key handler without re-binding it on every change.
-  const partsKeys = useRef({ pickMode, selectedPartId, removePart, history })
-  partsKeys.current = { pickMode, selectedPartId, removePart, history }
+  /**
+   * Arrow keys move the selected part relative to the view: Left/Right along whichever world axis
+   * points most to the screen's right, Up/Down along the axis pointing most away from you.
+   * With Alt, Up/Down raise and lower it.
+   */
+  const nudge = (code: string, step: number, vertical: boolean) => {
+    const part = doc?.build.parts.find((p) => p.id === selectedPartId)
+    if (!part) return
+    const { forward } = hudRef.current
+    const position = [...part.position] as Vec3
+    if (vertical) {
+      if (code === 'ArrowUp') position[1] += step
+      else if (code === 'ArrowDown') position[1] -= step
+      else return
+    } else {
+      // Screen right = forward × up, projected on the ground; screen up = forward on the ground.
+      const right = { x: -forward.z, z: forward.x }
+      const ahead = { x: forward.x, z: forward.z }
+      const dir = code === 'ArrowRight' ? right : code === 'ArrowLeft' ? { x: -right.x, z: -right.z } : code === 'ArrowUp' ? ahead : { x: -ahead.x, z: -ahead.z }
+      if (Math.abs(dir.x) >= Math.abs(dir.z)) position[0] += Math.sign(dir.x) * step
+      else position[2] += Math.sign(dir.z) * step
+    }
+    position[0] = Math.abs(position[0]) < 1e-6 ? 0 : position[0]
+    updatePart(part.id, { position: position.map((v) => Math.round(v * 1000) / 1000) as Vec3 }, `Nudged ${nameOf(part.id)}`, `nudge:${part.id}`)
+  }
+
+  const partsKeys = useRef({ pickMode, selectedPartId, removePart, history, nudge })
+  partsKeys.current = { pickMode, selectedPartId, removePart, history, nudge }
 
   const onDrop = async (e: DragEvent) => {
     e.preventDefault()
@@ -478,12 +520,16 @@ export default function App() {
             ◢
           </span>
           Car Customizer
-          <button className="btn-icon settings-btn" onClick={() => setSettingsOpen(true)} aria-label="Settings" title="Settings">
-            ⚙
+          <button className="btn-icon settings-btn" onClick={() => setSettingsOpen(true)} {...tip('Settings', 'Camera controls, mouse look, part dragging and what the screen shows.')}>
+            <SettingsIcon size={17} />
           </button>
         </header>
-        <button className="btn btn-primary btn-block" onClick={() => fileInput.current?.click()}>
-          Upload model
+        <button
+          className="btn btn-primary btn-block"
+          onClick={() => fileInput.current?.click()}
+          {...tip('Upload model', 'Load a car (.glb, .gltf, .fbx, .obj or a .zip with textures). You can also drop files anywhere on the page.')}
+        >
+          <Upload size={16} /> Upload model
         </button>
         <p className="hint">.glb · .gltf · .fbx · .obj — or a .zip / folder with textures</p>
         <input
@@ -528,9 +574,16 @@ export default function App() {
             onTransform: transformPart,
             onPlace: placeSelected,
             onToggleHidden: toggleHidden,
+            dragOptions: {
+              axisLock: settings.dragAxisLock,
+              centerSnap: settings.dragCenterSnap,
+              precision: settings.dragPrecision,
+            },
           }}
           captureRef={captureRef}
         />
+
+        <DragReadout />
 
         {pickMode && (
           <div className="pick-banner" role="status">
@@ -549,6 +602,7 @@ export default function App() {
             mode={cameraMode}
             lookMode={settings.lookMode}
             showHints={settings.showHints}
+            partGizmo={selectedPartId && !pickMode ? gizmoMode : null}
             onMode={changeCameraMode}
             onView={requestView}
           />
@@ -629,6 +683,8 @@ export default function App() {
         )}
         {dragging && <div className="drop-hint">Drop to load model</div>}
       </main>
+
+      <Tooltips />
 
       <SettingsDialog
         open={settingsOpen}

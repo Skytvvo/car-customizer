@@ -14,6 +14,12 @@ export interface Settings {
   showMinimap: boolean
   showViewCube: boolean
   showHints: boolean
+  /** Dragging a part sticks to the axis it starts along until pulled away. */
+  dragAxisLock: boolean
+  /** Parts snap to the car's center line when dragged near it. */
+  dragCenterSnap: boolean
+  /** Slow mouse movement moves parts in fine steps. */
+  dragPrecision: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -25,6 +31,9 @@ export const DEFAULT_SETTINGS: Settings = {
   showMinimap: true,
   showViewCube: true,
   showHints: true,
+  dragAxisLock: true,
+  dragCenterSnap: true,
+  dragPrecision: true,
 }
 
 export const FLY_SPEED_RANGE = [0.25, 6] as const
@@ -52,6 +61,9 @@ export function loadSettings(): Settings {
       showMinimap: bool(saved.showMinimap, d.showMinimap),
       showViewCube: bool(saved.showViewCube, d.showViewCube),
       showHints: bool(saved.showHints, d.showHints),
+      dragAxisLock: bool(saved.dragAxisLock, d.dragAxisLock),
+      dragCenterSnap: bool(saved.dragCenterSnap, d.dragCenterSnap),
+      dragPrecision: bool(saved.dragPrecision, d.dragPrecision),
     }
   } catch {
     return { ...DEFAULT_SETTINGS }

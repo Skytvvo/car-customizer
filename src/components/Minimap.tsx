@@ -1,5 +1,6 @@
 import { useEffect, useRef, type MutableRefObject, type PointerEvent } from 'react'
 import type { HudState } from '../lib/hud'
+import { tip } from '../lib/tip'
 
 const SIZE = 184 // CSS pixels
 
@@ -159,7 +160,7 @@ export default function Minimap({ hudRef, onMoveTo }: Props) {
         ref={canvasRef}
         style={{ width: SIZE, height: SIZE }}
         onPointerDown={onPointerDown}
-        title="Click to move the camera there"
+        {...tip('Minimap', 'Top-down view: the car, your camera and where it looks. Click anywhere to move the camera there.', 'M')}
       />
       <div className="minimap-height">
         <MinimapReadout hudRef={hudRef} />

@@ -1370,3 +1370,150 @@ kbd {
 .btn-link:hover {
   text-decoration: underline;
 }
+
+.muted-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Live drag readout */
+.drag-readout {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(15, 17, 21, 0.88);
+  border: 1px solid var(--border);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.drag-readout .coords {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.drag-readout b {
+  margin: 0 3px 0 8px;
+}
+
+.drag-readout b.x {
+  color: #ff5a4a;
+  margin-left: 0;
+}
+
+.drag-readout b.y {
+  color: #3ddc84;
+}
+
+.drag-readout b.z {
+  color: #4a8dff;
+}
+
+.drag-readout .tags {
+  display: flex;
+  gap: 6px;
+}
+
+.tag {
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.tag.axis-x {
+  color: #ff8a7e;
+  background: rgba(255, 90, 74, 0.15);
+}
+
+.tag.axis-z {
+  color: #8ab4ff;
+  background: rgba(74, 141, 255, 0.15);
+}
+
+.tag.center {
+  color: #7ff0b0;
+  background: rgba(61, 220, 132, 0.15);
+}
+
+/* Rich tooltips */
+.tooltip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 260px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #262b36;
+  border: 1px solid #3b4252;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  pointer-events: none;
+  animation: tooltip-in 0.12s ease-out;
+}
+
+@keyframes tooltip-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+.tooltip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tooltip-keys {
+  display: flex;
+  gap: 3px;
+}
+
+.tooltip p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+/* Icon + label buttons */
+.btn,
+.segmented button,
+.view-btn,
+.tabs button,
+.catalog-card,
+.preset,
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.btn svg,
+.segmented button svg,
+.tabs button svg {
+  flex-shrink: 0;
+}
+
+.btn-icon {
+  display: inline-grid;
+  place-items: center;
+}
+
+/* Keep the drag readout in the visible area left of the side panel on wide layouts. */
+@media (min-width: 761px) {
+  .stage:has(.panel) .drag-readout {
+    left: calc((100% - 336px) / 2);
+  }
+}

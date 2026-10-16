@@ -1,6 +1,6 @@
 import { useEffect, useRef, type MutableRefObject } from 'react'
 import * as THREE from 'three'
-import { Canvas, useThree } from '@react-three/fiber'
+import { Canvas, events as defaultEvents, useThree, type RootState } from '@react-three/fiber'
 import { ContactShadows, Environment, Grid, Lightformer, OrbitControls } from '@react-three/drei'
 import { setRenderer } from '../lib/loaders'
 import type { Placement } from '../lib/normalize'
@@ -33,6 +33,23 @@ interface ViewerProps {
   captureRef: MutableRefObject<CaptureFn | null>
 }
 
+/**
+ * R3F's default pointer mapping reads offsetX/offsetY, which is wrong when the page is CSS-scaled
+ * (embedded or zoomed previews) and for some synthetic events. Use the canvas' on-screen rectangle,
+ * the same way our own picking code does.
+ */
+const canvasEvents: typeof defaultEvents = (store) => ({
+  ...defaultEvents(store),
+  compute(event, state: RootState) {
+    const rect = state.gl.domElement.getBoundingClientRect()
+    state.pointer.set(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1,
+    )
+    state.raycaster.setFromCamera(state.pointer, state.camera)
+  },
+})
+
 const DEFAULT_DIMS: [number, number, number] = [1.8, 1.45, 4.5]
 
 export default function Viewer(props: ViewerProps) {
@@ -48,6 +65,7 @@ export default function Viewer(props: ViewerProps) {
       camera={{ fov: FOV, near: 0.05, far: 500, position: viewPose('hero', dims).position }}
       gl={{ antialias: true, alpha: true }}
       onCreated={({ gl }) => setRenderer(gl)}
+      events={canvasEvents}
     >
       <StudioLighting />
       {model && (

@@ -8,6 +8,22 @@ import { FINISHES, SWATCHES } from '../parts/finishes'
 import { isDeformed, NO_DEFORM } from '../parts/deform'
 import type { Deform } from '../lib/build'
 import type { GizmoMode, PickMode } from './PartsLayer'
+import { tip } from '../lib/tip'
+import {
+  AlignCenterVertical,
+  Copy,
+  Eye,
+  EyeOff,
+  MousePointerClick,
+  Move,
+  Plus,
+  Rotate3d,
+  RotateCcw,
+  Scaling,
+  Trash2,
+  Upload,
+  type LucideIcon,
+} from 'lucide-react'
 
 interface Props {
   build: Build
@@ -39,10 +55,26 @@ const SHAPE_CONTROLS: { key: keyof Deform; label: string; hint: string; min: num
   { key: 'taper', label: 'Taper', hint: 'Make the part thinner toward its ends', min: 0, max: 0.9, step: 0.01 },
 ]
 
-const GIZMO_MODES: { mode: GizmoMode; label: string }[] = [
-  { mode: 'translate', label: 'Move' },
-  { mode: 'rotate', label: 'Rotate' },
-  { mode: 'scale', label: 'Scale' },
+const FINISH_TIPS: Record<FinishType, string> = {
+  original: "Keeps the uploaded model's own materials and textures.",
+  gloss: 'Shiny paint with a clear coat.',
+  metallic: 'Paint with metal flake and clear coat.',
+  satin: 'Soft sheen between gloss and matte.',
+  matte: 'Flat, no reflections.',
+  carbon: 'Twill-weave carbon fiber under clear coat.',
+  chrome: 'Mirror metal. Pick a color for tinted chrome (gold, black chrome…).',
+}
+
+const GIZMO_MODES: { mode: GizmoMode; label: string; icon: LucideIcon; key: string; tip: string }[] = [
+  {
+    mode: 'translate',
+    label: 'Move',
+    icon: Move,
+    key: 'W',
+    tip: 'Drag the part itself to slide it: it locks to the axis you start along (pull sideways to break free) and snaps to the center line. Shift = fine, Alt = up/down. Or drag the arrows.',
+  },
+  { mode: 'rotate', label: 'Rotate', icon: Rotate3d, key: 'E', tip: 'Drag the rings to turn the part around each axis.' },
+  { mode: 'scale', label: 'Scale', icon: Scaling, key: 'R', tip: 'Drag a handle to stretch along one axis, or the center to resize evenly.' },
 ]
 
 export default function PartsPanel(p: Props) {
@@ -65,7 +97,7 @@ export default function PartsPanel(p: Props) {
               className="catalog-card"
               aria-expanded={openKind === d.kind}
               onClick={() => setOpenKind(openKind === d.kind ? null : d.kind)}
-              title={d.description}
+              {...tip(d.name, `${d.description} Click to see styles.`)}
             >
               {ICONS[d.kind]}
               <span>{d.name}</span>
@@ -75,8 +107,13 @@ export default function PartsPanel(p: Props) {
         {openKind && (
           <div className="presets" role="group" aria-label={`${CATALOG[openKind].name} styles`}>
             {CATALOG[openKind].presets.map((preset) => (
-              <button key={preset.id} className="preset" onClick={() => p.onAdd(openKind, preset.id)}>
-                + {preset.name}
+              <button
+                key={preset.id}
+                className="preset"
+                onClick={() => p.onAdd(openKind, preset.id)}
+                {...tip(`Add ${preset.name}`, `Adds a ${CATALOG[openKind].name.toLowerCase()} in this style. You can change every setting afterwards.`)}
+              >
+                <Plus size={13} /> {preset.name}
               </button>
             ))}
           </div>
@@ -97,19 +134,23 @@ export default function PartsPanel(p: Props) {
             if (files.length) p.onUploadParts(files)
           }}
         />
-        <button className="btn btn-block" onClick={() => uploadInput.current?.click()}>
-          Upload part (.glb, .fbx, .obj, .zip)
+        <button
+          className="btn btn-block"
+          onClick={() => uploadInput.current?.click()}
+          {...tip('Upload part', 'Add your own 3D part (.glb, .gltf, .fbx, .obj or a .zip with textures) to your parts library. Its units are detected automatically.')}
+        >
+          <Upload size={15} /> Upload part
         </button>
         {p.assets.length > 0 && (
           <ul className="part-list">
             {p.assets.map((asset) => (
               <li key={asset.id}>
-                <button className="part-name" onClick={() => p.onAddAsset(asset.id)} title="Add to the car">
-                  + {asset.name}
+                <button className="part-name" onClick={() => p.onAddAsset(asset.id)} {...tip(`Add ${asset.name}`, 'Puts it on the car, then click where it should go.')}>
+                  <Plus size={13} /> {asset.name}
                   <small> {asset.size.map((v) => Math.round(v * 100)).join('×')} cm</small>
                 </button>
-                <button className="btn-icon subtle" onClick={() => p.onDeleteAsset(asset)} title="Delete from library">
-                  ×
+                <button className="btn-icon subtle" onClick={() => p.onDeleteAsset(asset)} {...tip('Delete from library', 'Removes the uploaded file. Cars using it will show it as missing.')}>
+                  <Trash2 size={14} />
                 </button>
               </li>
             ))}
@@ -123,14 +164,18 @@ export default function PartsPanel(p: Props) {
           <ul className="part-list">
             {p.build.parts.map((part) => (
               <li key={part.id} className={part.id === p.selectedId ? 'active' : undefined}>
-                <button className="part-name" onClick={() => p.onSelect(part.id === p.selectedId ? null : part.id)}>
+                <button
+                  className="part-name"
+                  onClick={() => p.onSelect(part.id === p.selectedId ? null : part.id)}
+                  {...tip(partName(part, p.assets), 'Select to edit. You can also click the part on the car.', 'Esc')}
+                >
                   {partName(part, p.assets)}
                 </button>
-                <button className="btn-icon subtle" onClick={() => p.onDuplicate(part.id)} title="Duplicate">
-                  ⧉
+                <button className="btn-icon subtle" onClick={() => p.onDuplicate(part.id)} {...tip('Duplicate', 'Makes a copy slightly above, ready to move.')}>
+                  <Copy size={14} />
                 </button>
-                <button className="btn-icon subtle" onClick={() => p.onRemove(part.id)} title="Remove (Delete)">
-                  ×
+                <button className="btn-icon subtle" onClick={() => p.onRemove(part.id)} {...tip('Remove', 'Takes the part off the car (undo with Ctrl+Z).', 'Delete')}>
+                  <Trash2 size={14} />
                 </button>
               </li>
             ))}
@@ -150,6 +195,7 @@ export default function PartsPanel(p: Props) {
                   className="preset"
                   aria-pressed={selected.preset === preset.id}
                   onClick={() => p.onApplyPreset(selected.id, preset.id)}
+                  {...tip(preset.name, 'Restyle with this preset. Position, rotation and size stay.')}
                 >
                   {preset.name}
                 </button>
@@ -159,8 +205,8 @@ export default function PartsPanel(p: Props) {
 
           <div className="segmented small" role="group" aria-label="Gizmo">
             {GIZMO_MODES.map((g) => (
-              <button key={g.mode} aria-pressed={p.gizmoMode === g.mode} onClick={() => p.onGizmoMode(g.mode)}>
-                {g.label}
+              <button key={g.mode} aria-pressed={p.gizmoMode === g.mode} onClick={() => p.onGizmoMode(g.mode)} {...tip(g.label, g.tip, g.key)}>
+                <g.icon size={14} /> {g.label}
               </button>
             ))}
           </div>
@@ -168,16 +214,16 @@ export default function PartsPanel(p: Props) {
             <button
               className={`btn${p.pickMode === 'place' ? ' active' : ''}`}
               onClick={() => p.onPickMode(p.pickMode === 'place' ? null : 'place')}
-              title="Click a spot on the car to move the part there"
+              {...tip('Place on body', 'Then click a spot on the car: the part jumps there and sits on the surface. Near the middle it snaps to the center line.')}
             >
-              Place on body
+              <MousePointerClick size={14} /> Place
             </button>
             <button
               className="btn"
               onClick={() => update({ position: [0, selected.position[1], selected.position[2]] }, `Centered ${name}`)}
-              title="Center on the car's middle line"
+              {...tip('Center', "Moves the part onto the car's center line (left–right middle).")}
             >
-              Center
+              <AlignCenterVertical size={14} /> Center
             </button>
             <button
               className="btn"
@@ -185,9 +231,9 @@ export default function PartsPanel(p: Props) {
                 const fit = Number(selected.params.fit ?? 1)
                 update({ rotation: [0, 0, 0], scale: [fit, fit, fit] }, `Reset ${name}`)
               }}
-              title="Reset rotation and size"
+              {...tip('Reset', 'Straightens the rotation and restores the original size. Position stays.')}
             >
-              Reset
+              <RotateCcw size={14} /> Reset
             </button>
           </div>
 
@@ -242,7 +288,11 @@ export default function PartsPanel(p: Props) {
             <div className="shape-head">
               <span className="label">Shape</span>
               {isDeformed(selected.deform) && (
-                <button className="btn-link" onClick={() => update({ deform: undefined }, `Straightened ${name}`)}>
+                <button
+                  className="btn-link"
+                  onClick={() => update({ deform: undefined }, `Straightened ${name}`)}
+                  {...tip('Straighten', 'Removes all bend, sweep, twist and taper.')}
+                >
                   Straighten
                 </button>
               )}
@@ -253,7 +303,7 @@ export default function PartsPanel(p: Props) {
                 update({ deform: { ...NO_DEFORM, ...selected.deform, [c.key]: v } }, `${c.label}: ${name}`, `deform:${selected.id}:${c.key}`)
               return (
                 <div key={c.key} className="slider-field compact">
-                  <label htmlFor={`shape-${c.key}`} title={c.hint}>
+                  <label htmlFor={`shape-${c.key}`} {...tip(c.label, `${c.hint}. Double-click the slider to reset.`)}>
                     {c.label}
                   </label>
                   <input
@@ -265,7 +315,6 @@ export default function PartsPanel(p: Props) {
                     value={value}
                     onChange={(e) => set(Number(e.target.value))}
                     onDoubleClick={() => set(0)}
-                    title="Double-click to reset"
                   />
                   <output>{c.key === 'taper' ? `${Math.round(value * 100)}%` : `${value}°`}</output>
                 </div>
@@ -282,6 +331,7 @@ export default function PartsPanel(p: Props) {
                   className="chip"
                   aria-pressed={selected.finish.type === f.type}
                   onClick={() => update({ finish: { ...selected.finish, type: f.type as FinishType } }, `${f.label} finish: ${name}`)}
+                  {...tip(f.label, FINISH_TIPS[f.type])}
                 >
                   {f.label}
                 </button>
@@ -318,8 +368,9 @@ export default function PartsPanel(p: Props) {
         <button
           className={`btn btn-block${p.pickMode === 'hide' ? ' active' : ''}`}
           onClick={() => p.onPickMode(p.pickMode === 'hide' ? null : 'hide')}
+          {...tip('Hide parts by clicking', 'Then click pieces of the car (stock spoiler, badges, wipers) to hide them. Click again here or press Esc when done.', 'Esc')}
         >
-          {p.pickMode === 'hide' ? 'Done hiding' : 'Hide parts by clicking'}
+          <EyeOff size={15} /> {p.pickMode === 'hide' ? 'Done hiding' : 'Hide parts by clicking'}
         </button>
         <p className="hint">Remove the stock spoiler, badges or wipers. Some models merge parts into one mesh.</p>
         {p.build.hidden.length > 0 && (
@@ -328,14 +379,14 @@ export default function PartsPanel(p: Props) {
               {p.build.hidden.map((path) => (
                 <li key={path}>
                   <span className="part-name muted">{meshLabel(p.meshIndex?.byPath.get(path), path)}</span>
-                  <button className="btn-icon subtle" onClick={() => p.onToggleHidden(path)} title="Show again">
-                    ↺
+                  <button className="btn-icon subtle" onClick={() => p.onToggleHidden(path)} {...tip('Show again', 'Brings this hidden piece back.')}>
+                    <Eye size={14} />
                   </button>
                 </li>
               ))}
             </ul>
-            <button className="btn" onClick={p.onShowAll}>
-              Show all
+            <button className="btn" onClick={p.onShowAll} {...tip('Show all', 'Brings back every hidden piece of the car.')}>
+              <Eye size={14} /> Show all
             </button>
           </>
         )}

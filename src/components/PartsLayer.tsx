@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from 'react'
 import * as THREE from 'three'
 import { useThree, type ThreeEvent } from '@react-three/fiber'
-import { TransformControls } from '@react-three/drei'
+import { Line, TransformControls } from '@react-three/drei'
+import type { OrbitControls as OrbitControlsImpl } from 'three/examples/jsm/controls/OrbitControls.js'
+import { startDrag, stepDrag, type DragAxis, type DragOptions } from '../lib/smartDrag'
+import { setDragInfo } from '../lib/dragInfo'
 import { firstShownHit, type Build, type MeshIndex, type PartInstance, type SceneQuery, type Vec3 } from '../lib/build'
 import type { PartAsset } from '../lib/types'
 import { loadPartTemplate } from '../parts/uploaded'
@@ -29,15 +32,109 @@ export interface PartsLayerProps {
   onTransform: (id: string, patch: Pick<PartInstance, 'position' | 'rotation' | 'scale'>) => void
   onPlace: (point: Vec3) => void
   onToggleHidden: (path: string) => void
+  dragOptions: DragOptions
+}
+
+interface Guide {
+  axis: DragAxis | null
+  center: boolean
+  position: Vec3
 }
 
 export default function PartsLayer(props: PartsLayerProps) {
   const { build, meshIndex, modelRef, selectedId, gizmoMode, pickMode } = props
   const gl = useThree((s) => s.gl)
   const camera = useThree((s) => s.camera)
+  const controls = useThree((s) => s.controls) as OrbitControlsImpl | null
   const [selectedObject, setSelectedObject] = useState<THREE.Group | null>(null)
+  const [guide, setGuide] = useState<Guide | null>(null)
   const latest = useRef(props)
   latest.current = props
+
+  const select = useCallback((id: string) => latest.current.onSelect(id), [])
+
+  /**
+   * Drag a part by grabbing it (Move mode): slides on the horizontal plane through the grab
+   * point with axis lock, center magnet and precision speed; Alt moves it up/down, Shift is fine.
+   */
+  const grab = useCallback(
+    (id: string, e: ThreeEvent<PointerEvent>) => {
+      const p = latest.current
+      if (p.pickMode || p.gizmoMode !== 'translate' || e.nativeEvent.button !== 0) return
+      e.stopPropagation()
+      p.onSelect(id)
+      const obj = e.eventObject as THREE.Group
+      const el = gl.domElement
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -e.point.y)
+      const raycaster = new THREE.Raycaster()
+      const ndc = new THREE.Vector2()
+      const hitAt = (x: number, y: number) => {
+        const rect = el.getBoundingClientRect()
+        ndc.set(((x - rect.left) / rect.width) * 2 - 1, -((y - rect.top) / rect.height) * 2 + 1)
+        raycaster.setFromCamera(ndc, camera)
+        return raycaster.ray.intersectPlane(plane, new THREE.Vector3())
+      }
+      let last = hitAt(e.nativeEvent.clientX, e.nativeEvent.clientY) ?? e.point.clone()
+      let lastX = e.nativeEvent.clientX
+      let lastY = e.nativeEvent.clientY
+      let lastT = performance.now()
+      const state = startDrag(obj.position)
+      const fov = THREE.MathUtils.degToRad((camera as THREE.PerspectiveCamera).fov ?? 35)
+      const metersPerPixel = (2 * camera.position.distanceTo(e.point) * Math.tan(fov / 2)) / el.clientHeight
+      const orbitWasEnabled = controls?.enabled ?? false
+      if (controls) controls.enabled = false
+      el.style.cursor = 'grabbing'
+      let moved = false
+
+      const onMove = (ev: PointerEvent) => {
+        const now = performance.now()
+        const dt = Math.max(1, now - lastT)
+        const speed = Math.hypot(ev.clientX - lastX, ev.clientY - lastY) / dt
+        const hit = hitAt(ev.clientX, ev.clientY)
+        let dx = 0
+        let dz = 0
+        let dy = 0
+        if (ev.altKey) dy = -(ev.clientY - lastY) * metersPerPixel
+        else if (hit) {
+          dx = hit.x - last.x
+          dz = hit.z - last.z
+        }
+        if (hit) last = hit
+        const across = state.axis === 'x' ? Math.abs(dz) : state.axis === 'z' ? Math.abs(dx) : 0
+        lastX = ev.clientX
+        lastY = ev.clientY
+        lastT = now
+        const r = stepDrag(
+          state,
+          { dx, dz, dy, speed, perpSpeed: across / metersPerPixel / dt, metersPerPixel, fine: ev.shiftKey },
+          latest.current.dragOptions,
+        )
+        obj.position.copy(r.position)
+        moved = true
+        const position = r.position.toArray() as Vec3
+        setGuide({ axis: r.axis, center: r.snappedToCenter, position })
+        setDragInfo({ position, axis: r.axis, free: r.free, center: r.snappedToCenter, fine: ev.shiftKey, vertical: ev.altKey, gain: r.gain })
+      }
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        if (controls) controls.enabled = orbitWasEnabled
+        el.style.cursor = ''
+        setGuide(null)
+        setDragInfo(null)
+        if (moved) {
+          latest.current.onTransform(id, {
+            position: obj.position.toArray() as Vec3,
+            rotation: [obj.rotation.x, obj.rotation.y, obj.rotation.z],
+            scale: obj.scale.toArray() as Vec3,
+          })
+        }
+      }
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+    },
+    [gl, camera, controls],
+  )
 
   // Hide/show original meshes.
   useEffect(() => {
@@ -116,9 +213,11 @@ export default function PartsLayer(props: PartsLayerProps) {
           part={part}
           asset={part.assetId ? props.assets.get(part.assetId) : undefined}
           groupRef={part.id === selectedId ? setSelectedObject : undefined}
-          onSelect={props.onSelect}
+          onSelect={select}
+          onGrab={grab}
         />
       ))}
+      {guide && <DragGuides guide={guide} />}
       {selectedObject && selectedId && (
         <TransformControls
           object={selectedObject}
@@ -132,16 +231,37 @@ export default function PartsLayer(props: PartsLayerProps) {
   )
 }
 
-function PartObject({
+/** Colored line along the locked axis (red X, blue Z) and a green center line while snapped. */
+function DragGuides({ guide }: { guide: Guide }) {
+  const [x, y, z] = guide.position
+  const reach = 4
+  const common = { lineWidth: 2, depthTest: false, transparent: true, opacity: 0.9, renderOrder: 10 }
+  return (
+    <>
+      {guide.axis === 'x' && (
+        <Line points={[[x - reach, y, z], [x + reach, y, z]]} color="#ff5a4a" dashed dashSize={0.08} gapSize={0.05} {...common} />
+      )}
+      {guide.axis === 'z' && (
+        <Line points={[[x, y, z - reach], [x, y, z + reach]]} color="#4a8dff" dashed dashSize={0.08} gapSize={0.05} {...common} />
+      )}
+      {guide.center && <Line points={[[0, y, -reach], [0, y, reach]]} color="#3ddc84" {...common} />}
+    </>
+  )
+}
+
+// Memoized: dragging re-renders the layer (guides) but must not re-apply stale positions to parts.
+const PartObject = memo(function PartObject({
   part,
   asset,
   groupRef,
   onSelect,
+  onGrab,
 }: {
   part: PartInstance
   asset?: PartAsset
   groupRef?: (g: THREE.Group | null) => void
   onSelect: (id: string) => void
+  onGrab: (id: string, e: ThreeEvent<PointerEvent>) => void
 }) {
   const onClick = (e: ThreeEvent<MouseEvent>) => {
     if (e.delta > 5) return // that was a drag
@@ -150,11 +270,18 @@ function PartObject({
   }
 
   return (
-    <group ref={groupRef} position={part.position} rotation={part.rotation} scale={part.scale} onClick={onClick}>
+    <group
+      ref={groupRef}
+      position={part.position}
+      rotation={part.rotation}
+      scale={part.scale}
+      onClick={onClick}
+      onPointerDown={(e) => onGrab(part.id, e)}
+    >
       {part.kind === 'upload' ? <UploadedPart part={part} asset={asset} /> : <BuiltInPart part={part} />}
     </group>
   )
-}
+})
 
 /** Generated from the catalog's builder; rebuilt when sliders change. */
 function BuiltInPart({ part }: { part: PartInstance }) {

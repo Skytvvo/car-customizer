@@ -53,7 +53,7 @@ export default function FlyHud({ hudRef, settings }: { hudRef: MutableRefObject<
               <span key={deg} data-deg={deg} className={deg % 45 === 0 ? 'compass-tick major' : 'compass-tick'} />
             )
           })}
-          <div ref={carRef} className="compass-car" title="Direction to the car">
+          <div ref={carRef} className="compass-car">
             ◆
           </div>
         </div>

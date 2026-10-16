@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { X } from 'lucide-react'
 import {
   DEFAULT_SETTINGS,
   FLY_SPEED_RANGE,
@@ -60,7 +61,7 @@ export default function SettingsDialog({ open, settings, onChange, onClose }: Pr
         <header className="settings-header">
           <h2 id="settings-title">Settings</h2>
           <button className="btn-icon" onClick={onClose} aria-label="Close settings">
-            ×
+            <X size={15} />
           </button>
         </header>
 
@@ -135,6 +136,28 @@ export default function SettingsDialog({ open, settings, onChange, onClose }: Pr
           <p className="settings-tip">
             In any style: <kbd>G</kbd> locks the mouse, scroll while holding the right button changes speed.
           </p>
+        </section>
+
+        <section>
+          <h3>Moving parts</h3>
+          <label className="check-row">
+            <input type="checkbox" checked={settings.dragAxisLock} onChange={(e) => onChange({ dragAxisLock: e.target.checked })} />
+            <span>
+              Axis lock <small className="muted-note">— a drag sticks to the line it starts along; pull sideways to break free</small>
+            </span>
+          </label>
+          <label className="check-row">
+            <input type="checkbox" checked={settings.dragCenterSnap} onChange={(e) => onChange({ dragCenterSnap: e.target.checked })} />
+            <span>
+              Snap to center line <small className="muted-note">— parts click into the car's middle</small>
+            </span>
+          </label>
+          <label className="check-row">
+            <input type="checkbox" checked={settings.dragPrecision} onChange={(e) => onChange({ dragPrecision: e.target.checked })} />
+            <span>
+              Precision speed <small className="muted-note">— slow mouse moves in fine steps (Shift is always extra fine)</small>
+            </span>
+          </label>
         </section>
 
         <section>
