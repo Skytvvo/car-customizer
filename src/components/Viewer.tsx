@@ -7,6 +7,8 @@ import type { Placement } from '../lib/normalize'
 import { FOV, viewPose, type CameraMode, type ViewRequest } from '../lib/camera'
 import { CameraRig, FlyControls } from './CameraControls'
 import { HudSync, SilhouetteBaker, ViewCube } from './SceneHud'
+import PartsLayer, { type GizmoMode, type PickMode, type SceneApi } from './PartsLayer'
+import type { Build, MeshIndex, PartInstance, Vec3 } from '../lib/build'
 import type { HudState } from '../lib/hud'
 import type { Settings } from '../lib/settings'
 
@@ -22,10 +24,24 @@ interface ViewerProps {
   viewRequest: ViewRequest | null
   onFocus: () => void
   showViewCube: boolean
+  /** Width in pixels of UI covering the right side of the view (the settings panel). */
+  panelInset: number
   settings: Settings
   onFlySpeedChange: (flySpeed: number) => void
   onViewDirection: (dir: [number, number, number]) => void
   hudRef: MutableRefObject<HudState>
+  parts: {
+    build: Build
+    meshIndex: MeshIndex | null
+    selectedId: string | null
+    gizmoMode: GizmoMode
+    pickMode: PickMode
+    apiRef: MutableRefObject<SceneApi | null>
+    onSelect: (id: string | null) => void
+    onTransform: (id: string, patch: Pick<PartInstance, 'position' | 'rotation' | 'scale'>) => void
+    onPlace: (point: Vec3) => void
+    onToggleHidden: (path: string) => void
+  }
   captureRef: MutableRefObject<CaptureFn | null>
 }
 
@@ -96,6 +112,7 @@ export default function Viewer(props: ViewerProps) {
         viewRequest={props.viewRequest}
         modelRef={modelRef}
         onFocus={props.onFocus}
+        inset={props.panelInset}
       />
       {cameraMode === 'fly' && (
         <FlyControls baseSpeed={length * 0.7} settings={props.settings} onSpeedChange={props.onFlySpeedChange} />
@@ -104,10 +121,11 @@ export default function Viewer(props: ViewerProps) {
       <SilhouetteBaker
         hudRef={props.hudRef}
         modelRef={modelRef}
-        bakeKey={`${modelKey}:${model?.placement.rotation.join()}:${dims.join()}`}
+        bakeKey={`${modelKey}:${model?.placement.rotation.join()}:${dims.join()}:${props.parts.build.hidden.join()}`}
         dims={dims}
       />
       {model && props.showViewCube && <ViewCube onDirection={props.onViewDirection} />}
+      {model && <PartsLayer modelRef={modelRef} {...props.parts} />}
       <Capture captureRef={captureRef} dims={dims} />
     </Canvas>
   )
@@ -139,6 +157,10 @@ function Capture({ captureRef, dims }: { captureRef: MutableRefObject<CaptureFn 
       // Render once from the hero angle, grab pixels, then restore the user's view.
       const savedPos = camera.position.clone()
       const savedQuat = camera.quaternion.clone()
+      // Thumbnails are centered crops, so drop the panel offset for this render.
+      const cam = camera as THREE.PerspectiveCamera
+      const savedView = cam.view ? { ...cam.view } : null
+      cam.clearViewOffset()
       // Frame for the 16:10 crop of the canvas that becomes the thumbnail.
       const thumbAspect = 16 / 10
       const canvasAspect = gl.domElement.width / gl.domElement.height
@@ -148,7 +170,14 @@ function Capture({ captureRef, dims }: { captureRef: MutableRefObject<CaptureFn 
       const pose = viewPose('hero', dims, thumbAspect, 1.02, cropHalfV)
       camera.position.copy(pose.position)
       camera.lookAt(pose.target)
+      // Keep editing handles (part gizmo) out of the thumbnail.
+      const helpers: THREE.Object3D[] = []
+      scene.traverse((o) => {
+        if ((o as THREE.Object3D & { isTransformControls?: boolean }).isTransformControls && o.visible) helpers.push(o)
+      })
+      helpers.forEach((o) => (o.visible = false))
       gl.render(scene, camera)
+      helpers.forEach((o) => (o.visible = true))
 
       const thumb = document.createElement('canvas')
       thumb.width = 480
@@ -164,6 +193,9 @@ function Capture({ captureRef, dims }: { captureRef: MutableRefObject<CaptureFn 
 
       camera.position.copy(savedPos)
       camera.quaternion.copy(savedQuat)
+      if (savedView?.enabled) {
+        cam.setViewOffset(savedView.fullWidth, savedView.fullHeight, savedView.offsetX, savedView.offsetY, savedView.width, savedView.height)
+      }
       return thumb.toDataURL('image/webp', 0.85)
     }
     captureRef.current = capture

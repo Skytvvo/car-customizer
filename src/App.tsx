@@ -15,9 +15,15 @@ import { ACCEPT, countGeometry, expandFiles, extOf, loadModel, pickMainFile } fr
 import { autoOrient, computePlacement, measureBounds } from './lib/normalize'
 import { deleteModel, getModelFiles, listModels, saveModel, storageUsage } from './lib/storage'
 import { filesFromDrop } from './lib/dropFiles'
+import PartsPanel from './components/PartsPanel'
+import type { GizmoMode, PickMode, SceneApi } from './components/PartsLayer'
+import type { PanelTab } from './components/ModelPanel'
+import { emptyBuild, indexMeshes, type Build, type PartInstance, type Vec3 } from './lib/build'
+import { CATALOG, defaultParams } from './parts/catalog'
 import type { ModelRecord, ModelTransform, StoredFile } from './lib/types'
 
 const DEFAULT_LENGTH = 4.5
+const EMPTY_BUILD = emptyBuild()
 
 /** The model currently open in the viewer, saved or not. */
 export interface OpenModel {
@@ -31,6 +37,7 @@ export interface OpenModel {
   raw: THREE.Object3D
   bounds: THREE.Box3
   transform: ModelTransform
+  build: Build
   missing: string[]
   dirty: boolean
   dispose: () => void
@@ -49,7 +56,20 @@ export default function App() {
   const [viewRequest, setViewRequest] = useState<ViewRequest | null>(null)
   const [settings, setSettings] = useState<Settings>(loadSettings)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [panelTab, setPanelTab] = useState<PanelTab>('model')
+  const [selectedPartId, setSelectedPartId] = useState<string | null>(null)
+  const [gizmoMode, setGizmoMode] = useState<GizmoMode>('translate')
+  const [pickMode, setPickMode] = useState<PickMode>(null)
+  const sceneApiRef = useRef<SceneApi | null>(null)
   const hudRef = useRef(createHudState())
+  // The side panel floats over the 3D view on wide screens (it becomes a bottom sheet on phones).
+  const [wideStage, setWideStage] = useState(() => window.matchMedia('(min-width: 761px)').matches)
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 761px)')
+    const onChange = () => setWideStage(query.matches)
+    query.addEventListener('change', onChange)
+    return () => query.removeEventListener('change', onChange)
+  }, [])
   const cameraModeRef = useRef(cameraMode)
   cameraModeRef.current = cameraMode
   const captureRef = useRef<CaptureFn | null>(null)
@@ -73,6 +93,7 @@ export default function App() {
     [current?.bounds, current?.transform], // eslint-disable-line react-hooks/exhaustive-deps
   )
   const stats = useMemo(() => (current ? countGeometry(current.raw) : null), [current?.raw]) // eslint-disable-line react-hooks/exhaustive-deps
+  const meshIndex = useMemo(() => (current ? indexMeshes(current.raw) : null), [current?.raw]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Any deliberate camera move stops the turntable, otherwise it spins away from the chosen view.
   const changeCameraMode = useCallback((mode: CameraMode) => {
@@ -118,8 +139,16 @@ export default function App() {
       const typing = (e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable], dialog')
       if (typing || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
       if (e.code === 'KeyF') changeCameraMode(cameraModeRef.current === 'fly' ? 'orbit' : 'fly')
+      // Esc steps back one level: cancel picking → deselect part → leave free cam.
       // The first Esc in a locked free cam only releases the mouse (the browser does that itself).
-      else if (e.code === 'Escape' && !pointerLockBusy()) setCameraMode('orbit')
+      else if (e.code === 'Escape' && !pointerLockBusy()) {
+        const { pickMode, selectedPartId } = partsKeys.current
+        if (pickMode) setPickMode(null)
+        else if (selectedPartId && cameraModeRef.current === 'orbit') setSelectedPartId(null)
+        else setCameraMode('orbit')
+      } else if ((e.code === 'Delete' || e.code === 'Backspace') && partsKeys.current.selectedPartId) {
+        partsKeys.current.removePart(partsKeys.current.selectedPartId)
+      }
       else if (e.code === 'KeyM') setSettings((s) => ({ ...s, showMinimap: !s.showMinimap }))
       else if (/^Digit[1-9]$/.test(e.code) && views[Number(e.code.slice(5)) - 1]) {
         requestView(views[Number(e.code.slice(5)) - 1])
@@ -131,6 +160,8 @@ export default function App() {
 
   const open = (next: OpenModel) => {
     setCameraMode('orbit')
+    setSelectedPartId(null)
+    setPickMode(null)
     setCurrent((prev) => {
       if (prev && prev.raw !== next.raw) prev.dispose()
       return next
@@ -165,6 +196,7 @@ export default function App() {
         raw: loaded.object,
         bounds,
         transform: { rotation: autoOrient(bounds), targetLength: DEFAULT_LENGTH },
+        build: emptyBuild(),
         missing: loaded.missing,
         dirty: true,
         dispose: loaded.dispose,
@@ -186,6 +218,7 @@ export default function App() {
         raw: loaded.object,
         bounds: measureBounds(loaded.object),
         transform: record.transform,
+        build: record.build ?? emptyBuild(),
         missing: loaded.missing,
         dirty: false,
         dispose: loaded.dispose,
@@ -210,13 +243,14 @@ export default function App() {
           sizeBytes: current.files.reduce((sum, f) => sum + f.blob.size, 0),
           dimensions: placement.dimensions,
         },
+        build: current.build,
         thumbnail: captureRef.current?.(),
         createdAt: current.createdAt ?? now,
         updatedAt: now,
       }
       // Original files are immutable, so they're written only on the first save.
       await saveModel(record, current.savedId ? undefined : current.files)
-      setCurrent({ ...current, savedId: id, key: current.key, createdAt: record.createdAt, dirty: false })
+      setCurrent((c) => (c ? { ...c, savedId: id, createdAt: record.createdAt, dirty: false } : c))
       await refreshLibrary()
     })
 
@@ -234,6 +268,77 @@ export default function App() {
 
   const update = (patch: Partial<Pick<OpenModel, 'name' | 'transform'>>) =>
     current && setCurrent({ ...current, ...patch, dirty: true })
+
+  // ── Parts / build editing ──
+  const updateBuild = (fn: (build: Build) => Build) =>
+    setCurrent((c) => (c ? { ...c, build: fn(c.build), dirty: true } : c))
+  const updatePart = (id: string, patch: Partial<PartInstance>) =>
+    updateBuild((b) => ({ ...b, parts: b.parts.map((part) => (part.id === id ? { ...part, ...patch } : part)) }))
+
+  const addPart = (kind: string) => {
+    const def = CATALOG[kind]
+    if (!def || !placement) return
+    const dims = placement.dimensions
+    const { x, z } = def.anchor(dims)
+    const y = sceneApiRef.current?.surfaceBelow(x, z) ?? dims[1] * 0.75
+    const part: PartInstance = {
+      id: crypto.randomUUID(),
+      kind,
+      params: defaultParams(def, dims),
+      position: [x, y, z],
+      rotation: [0, 0, 0],
+      scale: [1, 1, 1],
+      finish: { ...def.defaultFinish },
+    }
+    updateBuild((b) => ({ ...b, parts: [...b.parts, part] }))
+    setSelectedPartId(part.id)
+    setGizmoMode('translate')
+    setPanelTab('parts')
+    // Swing the camera to a 3/4 view of the end of the car where the part landed.
+    moveCamera({ dir: [0.95, 0.5, z < 0 ? -1.05 : 1.05] })
+  }
+
+  const removePart = (id: string) => {
+    updateBuild((b) => ({ ...b, parts: b.parts.filter((part) => part.id !== id) }))
+    setSelectedPartId((sel) => (sel === id ? null : sel))
+  }
+
+  const duplicatePart = (id: string) => {
+    const source = current?.build.parts.find((part) => part.id === id)
+    if (!source) return
+    const copy: PartInstance = {
+      ...source,
+      id: crypto.randomUUID(),
+      position: [source.position[0], source.position[1] + 0.15, source.position[2]],
+    }
+    updateBuild((b) => ({ ...b, parts: [...b.parts, copy] }))
+    setSelectedPartId(copy.id)
+  }
+
+  /** Click on the body in "Place on body" mode; snaps to the center line when close to it. */
+  const placeSelected = (point: Vec3) => {
+    if (selectedPartId) {
+      const x = Math.abs(point[0]) < 0.12 ? 0 : point[0]
+      updatePart(selectedPartId, { position: [x, point[1], point[2]] })
+    }
+    setPickMode(null)
+  }
+
+  const toggleHidden = (path: string) =>
+    updateBuild((b) => ({
+      ...b,
+      hidden: b.hidden.includes(path) ? b.hidden.filter((h) => h !== path) : [...b.hidden, path],
+    }))
+
+  const selectPart = (id: string | null) => {
+    setSelectedPartId(id)
+    if (id) setPanelTab('parts')
+    setPickMode((m) => (m === 'place' ? null : m))
+  }
+
+  // Latest values for the global key handler without re-binding it on every change.
+  const partsKeys = useRef({ pickMode, selectedPartId, removePart })
+  partsKeys.current = { pickMode, selectedPartId, removePart }
 
   const onDrop = async (e: DragEvent) => {
     e.preventDefault()
@@ -293,12 +398,34 @@ export default function App() {
           viewRequest={viewRequest}
           onFocus={focusOrbit}
           showViewCube={settings.showViewCube}
+          panelInset={current && cameraMode !== 'fly' && wideStage ? 336 : 0}
           settings={settings}
           onFlySpeedChange={setFlySpeed}
           onViewDirection={requestDirection}
           hudRef={hudRef}
+          parts={{
+            build: current?.build ?? EMPTY_BUILD,
+            meshIndex,
+            selectedId: selectedPartId,
+            gizmoMode,
+            pickMode,
+            apiRef: sceneApiRef,
+            onSelect: selectPart,
+            onTransform: updatePart,
+            onPlace: placeSelected,
+            onToggleHidden: toggleHidden,
+          }}
           captureRef={captureRef}
         />
+
+        {pickMode && (
+          <div className="pick-banner" role="status">
+            {pickMode === 'place' ? 'Click a spot on the car to move the part there' : 'Click parts of the car to hide them'}
+            <span>
+              <kbd>Esc</kbd> {pickMode === 'place' ? 'cancel' : 'done'}
+            </span>
+          </div>
+        )}
 
         {current && settings.showMinimap && <Minimap hudRef={hudRef} onMoveTo={moveCameraTo} />}
         {current && cameraMode === 'fly' && <FlyHud hudRef={hudRef} settings={settings} />}
@@ -341,6 +468,27 @@ export default function App() {
             onAutoOrient={() => update({ transform: { ...current.transform, rotation: autoOrient(current.bounds) } })}
             onSave={save}
             saving={!!busy}
+            tab={panelTab}
+            onTab={setPanelTab}
+            partsCount={current.build.parts.length}
+            partsPanel={
+              <PartsPanel
+                build={current.build}
+                meshIndex={meshIndex}
+                selectedId={selectedPartId}
+                gizmoMode={gizmoMode}
+                pickMode={pickMode}
+                onAdd={addPart}
+                onSelect={selectPart}
+                onUpdate={updatePart}
+                onRemove={removePart}
+                onDuplicate={duplicatePart}
+                onGizmoMode={setGizmoMode}
+                onPickMode={setPickMode}
+                onToggleHidden={toggleHidden}
+                onShowAll={() => updateBuild((b) => ({ ...b, hidden: [] }))}
+              />
+            }
           />
         )}
 

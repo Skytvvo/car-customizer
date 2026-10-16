@@ -1,3 +1,5 @@
+import type { Build } from './build'
+
 /** Rotation in quarter turns (0–3) around X, Y, Z. */
 export type QuarterTurns = [number, number, number]
 
@@ -30,6 +32,8 @@ export interface ModelRecord {
   transform: ModelTransform
   stats: ModelStats
   thumbnail?: string
+  /** Customization (added parts, hidden meshes). Missing on records saved before builds existed. */
+  build?: Build
   createdAt: number
   updatedAt: number
 }

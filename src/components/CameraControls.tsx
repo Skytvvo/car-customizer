@@ -5,6 +5,7 @@ import type { OrbitControls as OrbitControlsImpl } from 'three/examples/jsm/cont
 import { poseFromDirection, viewPose, type CameraMode, type ViewRequest } from '../lib/camera'
 import { clampFlySpeed, type Settings } from '../lib/settings'
 import { isPointerLocked, requestPointerLock } from '../lib/pointerLock'
+import { firstShownHit } from '../lib/build'
 
 type Dims = [number, number, number]
 
@@ -32,14 +33,26 @@ interface RigProps {
   modelRef: RefObject<THREE.Object3D | null>
   /** Double-click focuses a point and switches back to orbit mode. */
   onFocus: () => void
+  /** Pixels on the right covered by UI; framing fits the car into the remaining area. */
+  inset: number
 }
 
 /** Frames new models, animates preset views, and keeps orbit/free-cam hand-offs seamless. */
-export function CameraRig({ modelKey, dims, mode, viewRequest, modelRef, onFocus }: RigProps) {
+export function CameraRig({ modelKey, dims, mode, viewRequest, modelRef, onFocus, inset: panelInset }: RigProps) {
   const camera = useThree((s) => s.camera)
   const gl = useThree((s) => s.gl)
   const controls = useThree((s) => s.controls) as OrbitControlsImpl | null
-  const aspect = useThree((s) => s.size.width / s.size.height)
+  const size = useThree((s) => s.size)
+  // Only make room for the panel when it covers a minor part of the view; on narrow views it would squeeze the car too much.
+  const inset = size.width >= panelInset * 2.6 ? panelInset : 0
+  const aspect = (size.width - inset) / size.height
+
+  // Shift the picture left so the orbit center sits in the middle of the visible area, not under the panel.
+  useEffect(() => {
+    const cam = camera as THREE.PerspectiveCamera
+    if (inset > 0) cam.setViewOffset(size.width, size.height, inset / 2, 0, size.width, size.height)
+    else cam.clearViewOffset()
+  }, [camera, inset, size.width, size.height])
   const tween = useRef<Tween | null>(null)
   const prevMode = useRef(mode)
   const [w, h, l] = dims
@@ -120,7 +133,7 @@ export function CameraRig({ modelKey, dims, mode, viewRequest, modelRef, onFocus
       const rect = el.getBoundingClientRect()
       ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
       raycaster.setFromCamera(ndc, camera)
-      const hit = raycaster.intersectObject(model, true)[0]
+      const hit = firstShownHit(raycaster, model)
       if (!hit) return
       onFocus()
       const offset = camera.position.clone().sub(hit.point)
