@@ -7,11 +7,8 @@ interface Props {
   model: OpenModel
   dimensions: [number, number, number]
   stats: { meshes: number; triangles: number }
-  autoRotate: boolean
-  showGrid: boolean
+  toggles: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string }[]
   saving: boolean
-  onAutoRotate: (v: boolean) => void
-  onShowGrid: (v: boolean) => void
   onChange: (patch: Partial<Pick<OpenModel, 'name' | 'transform'>>) => void
   onAutoOrient: () => void
   onSave: () => void
@@ -101,14 +98,12 @@ export default function ModelPanel(p: Props) {
       </div>
 
       <div className="toggles">
-        <label>
-          <input type="checkbox" checked={p.autoRotate} onChange={(e) => p.onAutoRotate(e.target.checked)} />
-          Turntable
-        </label>
-        <label>
-          <input type="checkbox" checked={p.showGrid} onChange={(e) => p.onShowGrid(e.target.checked)} />
-          Grid
-        </label>
+        {p.toggles.map((t) => (
+          <label key={t.label} title={t.hint}>
+            <input type="checkbox" checked={t.checked} onChange={(e) => t.onChange(e.target.checked)} />
+            {t.label}
+          </label>
+        ))}
       </div>
 
       <p className="meta">

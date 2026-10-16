@@ -6,6 +6,8 @@ import { setRenderer } from '../lib/loaders'
 import type { Placement } from '../lib/normalize'
 import { FOV, viewPose, type CameraMode, type ViewRequest } from '../lib/camera'
 import { CameraRig, FlyControls } from './CameraControls'
+import { HudSync, SilhouetteBaker, ViewCube } from './SceneHud'
+import type { HudState } from '../lib/hud'
 
 export type CaptureFn = () => string
 
@@ -18,6 +20,9 @@ interface ViewerProps {
   cameraMode: CameraMode
   viewRequest: ViewRequest | null
   onFocus: () => void
+  showViewCube: boolean
+  onViewDirection: (dir: [number, number, number]) => void
+  hudRef: MutableRefObject<HudState>
   captureRef: MutableRefObject<CaptureFn | null>
 }
 
@@ -90,6 +95,14 @@ export default function Viewer(props: ViewerProps) {
         onFocus={props.onFocus}
       />
       {cameraMode === 'fly' && <FlyControls speed={length * 0.7} />}
+      <HudSync hudRef={props.hudRef} mode={cameraMode} dims={dims} />
+      <SilhouetteBaker
+        hudRef={props.hudRef}
+        modelRef={modelRef}
+        bakeKey={`${modelKey}:${model?.placement.rotation.join()}:${dims.join()}`}
+        dims={dims}
+      />
+      {model && props.showViewCube && <ViewCube onDirection={props.onViewDirection} />}
       <Capture captureRef={captureRef} dims={dims} />
     </Canvas>
   )

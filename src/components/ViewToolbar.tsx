@@ -50,6 +50,7 @@ export default function ViewToolbar({ mode, onMode, onView }: Props) {
             <span>Right-drag pan</span>
             <span>Double-click focus point</span>
             <span><kbd>F</kbd> free cam</span>
+            <span><kbd>M</kbd> map</span>
           </>
         )}
       </div>

@@ -2,7 +2,7 @@ import { useEffect, useRef, type RefObject } from 'react'
 import * as THREE from 'three'
 import { useFrame, useThree } from '@react-three/fiber'
 import type { OrbitControls as OrbitControlsImpl } from 'three/examples/jsm/controls/OrbitControls.js'
-import { viewPose, type CameraMode, type ViewRequest } from '../lib/camera'
+import { poseFromDirection, viewPose, type CameraMode, type ViewRequest } from '../lib/camera'
 
 type Dims = [number, number, number]
 
@@ -86,7 +86,14 @@ export function CameraRig({ modelKey, dims, mode, viewRequest, modelRef, onFocus
 
   useEffect(() => {
     if (!viewRequest) return
-    const pose = viewPose(viewRequest.view, [w, h, l], aspect)
+    if ('position' in viewRequest) {
+      flyTo(new THREE.Vector3(...viewRequest.position), new THREE.Vector3(...viewRequest.target), 0.9)
+      return
+    }
+    const pose =
+      'view' in viewRequest
+        ? viewPose(viewRequest.view, [w, h, l], aspect)
+        : poseFromDirection(new THREE.Vector3(...viewRequest.dir), [w, h, l], aspect)
     flyTo(pose.position, pose.target)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewRequest])
@@ -172,6 +179,9 @@ export function FlyControls({ speed }: { speed: number }) {
     let lastY = 0
 
     const onPointerDown = (e: PointerEvent) => {
+      // The camera may have been moved by a transition since free cam started.
+      euler.setFromQuaternion(camera.quaternion, 'YXZ')
+      euler.z = 0
       drag = e.button === 0 ? 'look' : 'pan'
       lastX = e.clientX
       lastY = e.clientY

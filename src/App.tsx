@@ -4,6 +4,9 @@ import Viewer, { type CaptureFn } from './components/Viewer'
 import ModelPanel from './components/ModelPanel'
 import Library from './components/Library'
 import ViewToolbar from './components/ViewToolbar'
+import Minimap from './components/Minimap'
+import FlyHud from './components/FlyHud'
+import { createHudState } from './lib/hud'
 import { VIEWS, type CameraMode, type CameraView, type ViewRequest } from './lib/camera'
 import { ACCEPT, countGeometry, expandFiles, extOf, loadModel, pickMainFile } from './lib/loaders'
 import { autoOrient, computePlacement, measureBounds } from './lib/normalize'
@@ -41,6 +44,9 @@ export default function App() {
   const [showGrid, setShowGrid] = useState(false)
   const [cameraMode, setCameraMode] = useState<CameraMode>('orbit')
   const [viewRequest, setViewRequest] = useState<ViewRequest | null>(null)
+  const [showMinimap, setShowMinimap] = useState(true)
+  const [showViewCube, setShowViewCube] = useState(true)
+  const hudRef = useRef(createHudState())
   const cameraModeRef = useRef(cameraMode)
   cameraModeRef.current = cameraMode
   const captureRef = useRef<CaptureFn | null>(null)
@@ -66,11 +72,31 @@ export default function App() {
     if (mode === 'fly') setAutoRotate(false)
     setCameraMode(mode)
   }, [])
-  const requestView = useCallback((view: CameraView) => {
+  type CameraMove = { view: CameraView } | { dir: [number, number, number] } | { position: [number, number, number]; target: [number, number, number] }
+  const moveCamera = useCallback((move: CameraMove, toOrbit = true) => {
     setAutoRotate(false)
-    setCameraMode('orbit')
-    setViewRequest((prev) => ({ view, n: (prev?.n ?? 0) + 1 }))
+    if (toOrbit) setCameraMode('orbit')
+    setViewRequest((prev) => ({ ...move, n: (prev?.n ?? 0) + 1 }))
   }, [])
+  const requestView = useCallback((view: CameraView) => moveCamera({ view }), [moveCamera])
+  const requestDirection = useCallback((dir: [number, number, number]) => moveCamera({ dir }), [moveCamera])
+
+  /** Minimap click: go to that ground point at the current height and look at the car (stays in free cam). */
+  const moveCameraTo = useCallback(
+    (x: number, z: number) => {
+      const { dims, position } = hudRef.current
+      const [, h, l] = dims
+      const minDistance = l * 0.6
+      const distance = Math.hypot(x, z)
+      if (distance < minDistance) {
+        const [dx, dz] = distance > 1e-3 ? [x / distance, z / distance] : [0, 1]
+        x = dx * minDistance
+        z = dz * minDistance
+      }
+      moveCamera({ position: [x, Math.max(position.y, 0.4), z], target: [0, h * 0.45, 0] }, false)
+    },
+    [moveCamera],
+  )
   const focusOrbit = useCallback(() => {
     setAutoRotate(false)
     setCameraMode('orbit')
@@ -86,6 +112,7 @@ export default function App() {
       if (typing || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
       if (e.code === 'KeyF') changeCameraMode(cameraModeRef.current === 'fly' ? 'orbit' : 'fly')
       else if (e.code === 'Escape') setCameraMode('orbit')
+      else if (e.code === 'KeyM') setShowMinimap((v) => !v)
       else if (/^Digit[1-9]$/.test(e.code) && views[Number(e.code.slice(5)) - 1]) {
         requestView(views[Number(e.code.slice(5)) - 1])
       }
@@ -254,8 +281,14 @@ export default function App() {
           cameraMode={cameraMode}
           viewRequest={viewRequest}
           onFocus={focusOrbit}
+          showViewCube={showViewCube}
+          onViewDirection={requestDirection}
+          hudRef={hudRef}
           captureRef={captureRef}
         />
+
+        {current && showMinimap && <Minimap hudRef={hudRef} onMoveTo={moveCameraTo} />}
+        {current && cameraMode === 'fly' && <FlyHud hudRef={hudRef} />}
 
         {current && <ViewToolbar mode={cameraMode} onMode={changeCameraMode} onView={requestView} />}
 
@@ -266,15 +299,18 @@ export default function App() {
           </button>
         )}
 
-        {current && placement && stats && (
+        {/* Free cam is immersive: settings hide (like a game HUD) and return on Esc. */}
+        {current && placement && stats && cameraMode !== 'fly' && (
           <ModelPanel
             model={current}
             dimensions={placement.dimensions}
             stats={stats}
-            autoRotate={autoRotate}
-            showGrid={showGrid}
-            onAutoRotate={setAutoRotate}
-            onShowGrid={setShowGrid}
+            toggles={[
+              { label: 'Turntable', checked: autoRotate, onChange: setAutoRotate },
+              { label: 'Grid', checked: showGrid, onChange: setShowGrid },
+              { label: 'Minimap', checked: showMinimap, onChange: setShowMinimap, hint: 'Top-down map (M)' },
+              { label: 'View cube', checked: showViewCube, onChange: setShowViewCube },
+            ]}
             onChange={update}
             onAutoOrient={() => update({ transform: { ...current.transform, rotation: autoOrient(current.bounds) } })}
             onSave={save}
