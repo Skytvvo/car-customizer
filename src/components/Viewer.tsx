@@ -1,10 +1,11 @@
-import { useEffect, type MutableRefObject } from 'react'
+import { useEffect, useRef, type MutableRefObject } from 'react'
 import * as THREE from 'three'
 import { Canvas, useThree } from '@react-three/fiber'
 import { ContactShadows, Environment, Grid, Lightformer, OrbitControls } from '@react-three/drei'
-import type { OrbitControls as OrbitControlsImpl } from 'three/examples/jsm/controls/OrbitControls.js'
 import { setRenderer } from '../lib/loaders'
 import type { Placement } from '../lib/normalize'
+import { FOV, viewPose, type CameraMode, type ViewRequest } from '../lib/camera'
+import { CameraRig, FlyControls } from './CameraControls'
 
 export type CaptureFn = () => string
 
@@ -14,43 +15,31 @@ interface ViewerProps {
   modelKey: string
   autoRotate: boolean
   showGrid: boolean
+  cameraMode: CameraMode
+  viewRequest: ViewRequest | null
+  onFocus: () => void
   captureRef: MutableRefObject<CaptureFn | null>
 }
 
 const DEFAULT_DIMS: [number, number, number] = [1.8, 1.45, 4.5]
 
-const FOV = 35
-const HERO_DIRECTION = new THREE.Vector3(0.95, 0.42, 1.05).normalize()
-
-/** Standard 3/4 front view that fits the whole car in a viewport of the given aspect ratio. */
-function heroPose(
-  [w, h, l]: [number, number, number],
-  aspect = 16 / 10,
-  margin = 1.15,
-  halfV = THREE.MathUtils.degToRad(FOV / 2),
-) {
-  const radius = 0.5 * Math.hypot(w, h, l)
-  const halfH = Math.atan(Math.tan(halfV) * aspect)
-  const distance = (radius / Math.sin(Math.min(halfV, halfH))) * margin
-  const target = new THREE.Vector3(0, h * 0.45, 0)
-  return { position: HERO_DIRECTION.clone().multiplyScalar(distance).add(target), target }
-}
-
-export default function Viewer({ model, modelKey, autoRotate, showGrid, captureRef }: ViewerProps) {
+export default function Viewer(props: ViewerProps) {
+  const { model, modelKey, autoRotate, showGrid, cameraMode, captureRef } = props
   const dims = model?.placement.dimensions ?? DEFAULT_DIMS
   const [width, height, length] = dims
+  const modelRef = useRef<THREE.Group>(null)
 
   return (
     <Canvas
       className="viewer-canvas"
       dpr={[1, 2]}
-      camera={{ fov: FOV, near: 0.05, far: 500, position: heroPose(dims).position }}
+      camera={{ fov: FOV, near: 0.05, far: 500, position: viewPose('hero', dims).position }}
       gl={{ antialias: true, alpha: true }}
       onCreated={({ gl }) => setRenderer(gl)}
     >
       <StudioLighting />
       {model && (
-        <group position={model.placement.position}>
+        <group ref={modelRef} position={model.placement.position}>
           <group scale={model.placement.scale}>
             <group rotation={model.placement.rotation}>
               <primitive object={model.raw} />
@@ -84,14 +73,23 @@ export default function Viewer({ model, modelKey, autoRotate, showGrid, captureR
       )}
       <OrbitControls
         makeDefault
+        enabled={cameraMode === 'orbit'}
         enableDamping
-        autoRotate={autoRotate}
+        autoRotate={autoRotate && cameraMode === 'orbit'}
         autoRotateSpeed={0.8}
-        minDistance={length * 0.4}
+        minDistance={length * 0.1}
         maxDistance={length * 5}
         maxPolarAngle={Math.PI / 2 - 0.03}
       />
-      <CameraRig modelKey={modelKey} dims={dims} />
+      <CameraRig
+        modelKey={modelKey}
+        dims={dims}
+        mode={cameraMode}
+        viewRequest={props.viewRequest}
+        modelRef={modelRef}
+        onFocus={props.onFocus}
+      />
+      {cameraMode === 'fly' && <FlyControls speed={length * 0.7} />}
       <Capture captureRef={captureRef} dims={dims} />
     </Canvas>
   )
@@ -115,44 +113,21 @@ function StudioLighting() {
   )
 }
 
-function CameraRig({ modelKey, dims }: { modelKey: string; dims: [number, number, number] }) {
-  const camera = useThree((s) => s.camera)
-  const controls = useThree((s) => s.controls) as OrbitControlsImpl | null
-  const aspect = useThree((s) => s.size.width / s.size.height)
-  const [w, h, l] = dims
-
-  useEffect(() => {
-    const pose = heroPose([w, h, l], aspect)
-    camera.position.copy(pose.position)
-    if (controls) {
-      controls.target.copy(pose.target)
-      controls.update()
-    } else {
-      camera.lookAt(pose.target)
-    }
-    // Re-frame on model change and when the size/orientation changes, not on every window resize.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelKey, controls, camera, w, h, l])
-
-  return null
-}
-
 function Capture({ captureRef, dims }: { captureRef: MutableRefObject<CaptureFn | null>; dims: [number, number, number] }) {
   const { gl, scene, camera } = useThree()
-  const controls = useThree((s) => s.controls) as OrbitControlsImpl | null
 
   useEffect(() => {
     const capture: CaptureFn = () => {
       // Render once from the hero angle, grab pixels, then restore the user's view.
       const savedPos = camera.position.clone()
-      const savedTarget = controls?.target.clone()
+      const savedQuat = camera.quaternion.clone()
       // Frame for the 16:10 crop of the canvas that becomes the thumbnail.
       const thumbAspect = 16 / 10
       const canvasAspect = gl.domElement.width / gl.domElement.height
       const fullHalfV = THREE.MathUtils.degToRad(FOV / 2)
       const cropHalfV =
         canvasAspect >= thumbAspect ? fullHalfV : Math.atan((Math.tan(fullHalfV) * canvasAspect) / thumbAspect)
-      const pose = heroPose(dims, thumbAspect, 1.02, cropHalfV)
+      const pose = viewPose('hero', dims, thumbAspect, 1.02, cropHalfV)
       camera.position.copy(pose.position)
       camera.lookAt(pose.target)
       gl.render(scene, camera)
@@ -170,10 +145,7 @@ function Capture({ captureRef, dims }: { captureRef: MutableRefObject<CaptureFn 
       ctx.drawImage(src, (src.width - sw) / 2, (src.height - sh) / 2, sw, sh, 0, 0, thumb.width, thumb.height)
 
       camera.position.copy(savedPos)
-      if (controls && savedTarget) {
-        controls.target.copy(savedTarget)
-        controls.update()
-      }
+      camera.quaternion.copy(savedQuat)
       return thumb.toDataURL('image/webp', 0.85)
     }
     captureRef.current = capture
@@ -181,7 +153,7 @@ function Capture({ captureRef, dims }: { captureRef: MutableRefObject<CaptureFn 
       // A replaced canvas (e.g. StrictMode remount) may clean up late; don't clear the new one's hook.
       if (captureRef.current === capture) captureRef.current = null
     }
-  }, [gl, scene, camera, controls, dims, captureRef])
+  }, [gl, scene, camera, dims, captureRef])
 
   return null
 }

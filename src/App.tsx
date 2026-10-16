@@ -3,6 +3,8 @@ import type * as THREE from 'three'
 import Viewer, { type CaptureFn } from './components/Viewer'
 import ModelPanel from './components/ModelPanel'
 import Library from './components/Library'
+import ViewToolbar from './components/ViewToolbar'
+import { VIEWS, type CameraMode, type CameraView, type ViewRequest } from './lib/camera'
 import { ACCEPT, countGeometry, expandFiles, extOf, loadModel, pickMainFile } from './lib/loaders'
 import { autoOrient, computePlacement, measureBounds } from './lib/normalize'
 import { deleteModel, getModelFiles, listModels, saveModel, storageUsage } from './lib/storage'
@@ -37,6 +39,10 @@ export default function App() {
   const [dragging, setDragging] = useState(false)
   const [autoRotate, setAutoRotate] = useState(true)
   const [showGrid, setShowGrid] = useState(false)
+  const [cameraMode, setCameraMode] = useState<CameraMode>('orbit')
+  const [viewRequest, setViewRequest] = useState<ViewRequest | null>(null)
+  const cameraModeRef = useRef(cameraMode)
+  cameraModeRef.current = cameraMode
   const captureRef = useRef<CaptureFn | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
@@ -55,11 +61,46 @@ export default function App() {
   )
   const stats = useMemo(() => (current ? countGeometry(current.raw) : null), [current?.raw]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const open = (next: OpenModel) =>
+  // Any deliberate camera move stops the turntable, otherwise it spins away from the chosen view.
+  const changeCameraMode = useCallback((mode: CameraMode) => {
+    if (mode === 'fly') setAutoRotate(false)
+    setCameraMode(mode)
+  }, [])
+  const requestView = useCallback((view: CameraView) => {
+    setAutoRotate(false)
+    setCameraMode('orbit')
+    setViewRequest((prev) => ({ view, n: (prev?.n ?? 0) + 1 }))
+  }, [])
+  const focusOrbit = useCallback(() => {
+    setAutoRotate(false)
+    setCameraMode('orbit')
+  }, [])
+
+  // Camera shortcuts: F free cam, Esc orbit, 1–6 preset views.
+  const hasModel = !!current
+  useEffect(() => {
+    if (!hasModel) return
+    const views = Object.keys(VIEWS) as CameraView[]
+    const onKey = (e: KeyboardEvent) => {
+      const typing = (e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable]')
+      if (typing || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
+      if (e.code === 'KeyF') changeCameraMode(cameraModeRef.current === 'fly' ? 'orbit' : 'fly')
+      else if (e.code === 'Escape') setCameraMode('orbit')
+      else if (/^Digit[1-9]$/.test(e.code) && views[Number(e.code.slice(5)) - 1]) {
+        requestView(views[Number(e.code.slice(5)) - 1])
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [hasModel, requestView, changeCameraMode])
+
+  const open = (next: OpenModel) => {
+    setCameraMode('orbit')
     setCurrent((prev) => {
       if (prev && prev.raw !== next.raw) prev.dispose()
       return next
     })
+  }
 
   const run = async (label: string, task: () => Promise<void>) => {
     setBusy(label)
@@ -210,8 +251,13 @@ export default function App() {
           modelKey={current?.key ?? 'empty'}
           autoRotate={autoRotate}
           showGrid={showGrid}
+          cameraMode={cameraMode}
+          viewRequest={viewRequest}
+          onFocus={focusOrbit}
           captureRef={captureRef}
         />
+
+        {current && <ViewToolbar mode={cameraMode} onMode={changeCameraMode} onView={requestView} />}
 
         {!current && !busy && (
           <button className="empty" onClick={() => fileInput.current?.click()}>
